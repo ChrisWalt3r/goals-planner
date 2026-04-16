@@ -12,7 +12,7 @@ import {
   Folder,
   X,
   BarChart3,
-  Menu
+  Menu,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -44,15 +44,17 @@ export default function Sidebar({ activeView, setActiveView, onClose, isCollapse
       {onClose && (
         <button 
           onClick={onClose}
+          title="Close sidebar"
+          aria-label="Close sidebar"
           className="lg:hidden absolute top-6 right-6 p-2 hover:bg-white/5 rounded-lg transition-colors text-white/40 hover:text-white"
         >
           <X className="w-5 h-5" />
         </button>
       )}
 
-      <div className={cn("p-6 lg:p-8 flex-1 flex flex-col overflow-hidden", isCollapsed && "items-center px-4")}>
-        <div className={cn("flex items-center gap-3 mb-10 transition-all", isCollapsed ? "flex-col gap-6" : "justify-between")}>
-          <div className="flex items-center gap-3 min-w-0">
+      <div className={cn("p-6 lg:p-8 flex-1 flex flex-col overflow-hidden", isCollapsed && "items-center px-4")}> 
+        <div className={cn("flex items-center gap-3 mb-8 transition-all", isCollapsed ? "flex-col gap-4 items-center" : "justify-between")}> 
+          <div className={cn("flex items-center gap-3 min-w-0", isCollapsed && "justify-center")}> 
             <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-[0_0_20px_rgba(255,255,255,0.2)] shrink-0">
               <Cloud className="w-6 h-6 text-black" />
             </div>
@@ -63,19 +65,21 @@ export default function Sidebar({ activeView, setActiveView, onClose, isCollapse
               </div>
             )}
           </div>
-          
-          {/* Desktop Toggle Button */}
-          {!onClose && (
-            <button 
+          {onToggleCollapse && (
+            <button
+              type="button"
               onClick={onToggleCollapse}
+              title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               className={cn(
-                "p-2 hover:bg-white/5 rounded-lg transition-colors text-white/40 hover:text-white shrink-0",
-                isCollapsed ? "mt-2" : ""
+                'hidden lg:flex items-center justify-center w-10 h-10 rounded-xl border border-white/10 bg-white/5 text-white/60 hover:text-white hover:bg-white/10 transition-colors',
+                isCollapsed && 'w-9 h-9 rounded-full'
               )}
             >
               <Menu className="w-5 h-5" />
             </button>
           )}
+          
         </div>
 
         <nav className="space-y-1">
@@ -100,9 +104,9 @@ export default function Sidebar({ activeView, setActiveView, onClose, isCollapse
         </nav>
       </div>
 
-      <div className={cn("mt-auto p-6 border-t border-white/5 bg-white/[0.02]", isCollapsed && "p-4 items-center")}>
+      <div className={cn("mt-auto p-6 border-t border-white/5 sidebar-footer", isCollapsed && "p-4 items-center")}> 
         <div className={cn("flex items-center gap-3 mb-6 px-2 transition-all", isCollapsed ? "justify-center px-0" : "")}>
-          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-white/20 to-white/5 border border-white/10 flex items-center justify-center text-xs font-bold shrink-0">
+          <div className="w-10 h-10 rounded-full sidebar-avatar border border-white/10 flex items-center justify-center text-xs font-bold shrink-0">
             {user?.email[0].toUpperCase()}
           </div>
           {!isCollapsed && (
@@ -113,11 +117,19 @@ export default function Sidebar({ activeView, setActiveView, onClose, isCollapse
           )}
         </div>
         <div className={cn("grid gap-2", isCollapsed ? "grid-cols-1" : "grid-cols-2")}>
-          <button className="flex items-center justify-center p-3 rounded-xl bg-white/5 hover:bg-white/10 text-white/40 hover:text-white transition-all">
+          <button
+            type="button"
+            title="Settings"
+            aria-label="Open settings"
+            className="flex items-center justify-center p-3 rounded-xl bg-white/5 hover:bg-white/10 text-white/40 hover:text-white transition-all"
+          >
             <Settings className="w-4 h-4" />
           </button>
           <button 
             onClick={logout}
+            type="button"
+            title="Log out"
+            aria-label="Log out"
             className="flex items-center justify-center p-3 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all"
           >
             <LogOut className="w-4 h-4" />

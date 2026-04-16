@@ -26,25 +26,70 @@
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.2);
   }
+
+  .progress-bar {
+    @apply appearance-none overflow-hidden rounded-full bg-white/5;
+  }
+
+  .progress-bar::-webkit-progress-bar {
+    background: transparent;
+    border-radius: 9999px;
+  }
+
+  .progress-bar::-webkit-progress-value {
+    border-radius: 9999px;
+  }
+
+  .progress-bar::-moz-progress-bar {
+    border-radius: 9999px;
+  }
+
+  .progress-bar--emerald::-webkit-progress-value,
+  .progress-bar--emerald::-moz-progress-bar {
+    background: rgb(52 211 153);
+  }
+
+  .progress-bar--blue::-webkit-progress-value,
+  .progress-bar--blue::-moz-progress-bar {
+    background: rgb(96 165 250);
+  }
+
+  .progress-bar--purple::-webkit-progress-value,
+  .progress-bar--purple::-moz-progress-bar {
+    background: rgb(168 85 247);
+  }
+
+  .progress-bar--muted::-webkit-progress-value,
+  .progress-bar--muted::-moz-progress-bar {
+    background: rgba(255, 255, 255, 0.4);
+  }
+
+  .sidebar-footer {
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .sidebar-avatar {
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.05));
+  }
 }
 
 /* React Flow Overrides */
 .react-flow__node {
-  @apply !border-none !bg-transparent !p-0;
+  @apply border-none! bg-transparent! p-0!;
 }
 
 .react-flow__edge-path {
-  @apply !stroke-white/10 !stroke-[2px];
+  @apply stroke-white/10! stroke-[2px]!;
 }
 
 .react-flow__controls {
-  @apply !bg-[#1a1a1a] !border-white/10 !rounded-xl !overflow-hidden !shadow-2xl;
+  @apply bg-[#1a1a1a]! border-white/10! rounded-xl! overflow-hidden! shadow-2xl!;
 }
 
 .react-flow__controls-button {
-  @apply !bg-transparent !border-white/5 !fill-white/40 hover:!bg-white/5 hover:!fill-white !transition-all;
+  @apply bg-transparent! border-white/5! fill-white/40! hover:bg-white/5! hover:fill-white! transition-all!;
 }
 
 .react-flow__minimap {
-  @apply !bg-[#1a1a1a] !border-white/10 !rounded-2xl !overflow-hidden !shadow-2xl;
+  @apply bg-[#1a1a1a]! border-white/10! rounded-2xl! overflow-hidden! shadow-2xl!;
 }

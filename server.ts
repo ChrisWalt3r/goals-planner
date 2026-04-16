@@ -1,5 +1,7 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
+import http from 'http';
+import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
@@ -15,6 +17,34 @@ const __dirname = path.dirname(__filename);
 const JWT_SECRET = process.env.JWT_SECRET || 'cloud-planner-secret-key';
 const db = new Database('planner.db');
 db.pragma('foreign_keys = ON');
+
+const HOST = process.env.HOST || '0.0.0.0';
+const START_PORT = Number.parseInt(process.env.PORT ?? '', 10) || 3000;
+
+const isPortAvailable = (port: number, host: string) => {
+  return new Promise<boolean>((resolve) => {
+    const tester = net.createServer();
+
+    tester.unref();
+    tester.once('error', () => {
+      resolve(false);
+    });
+    tester.once('listening', () => {
+      tester.close(() => resolve(true));
+    });
+    tester.listen(port, host);
+  });
+};
+
+const findAvailablePort = async (startPort: number, host: string) => {
+  for (let port = startPort; port < startPort + 25; port += 1) {
+    if (await isPortAvailable(port, host)) {
+      return port;
+    }
+  }
+
+  throw new Error(`Unable to find an available port starting at ${startPort}`);
+};
 
 // Initialize Database
 db.exec(`
@@ -54,7 +84,7 @@ db.exec(`
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const server = http.createServer(app);
 
   app.use(express.json());
 
@@ -284,7 +314,10 @@ async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: { server },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -296,8 +329,16 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const port = await findAvailablePort(START_PORT, HOST);
+
+  server.listen(port, HOST, () => {
+    const hostLabel = HOST === '0.0.0.0' ? 'localhost' : HOST;
+    if (port !== START_PORT) {
+      console.log(`Port ${START_PORT} was busy, using http://${hostLabel}:${port}`);
+      return;
+    }
+
+    console.log(`Server running on http://${hostLabel}:${port}`);
   });
 }
 

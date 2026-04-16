@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useMemo } from 'react';
 import { usePlannerStore } from '../store';
 import { motion } from 'motion/react';
 import { 
@@ -10,8 +10,7 @@ import {
   CheckCircle2, 
   Clock, 
   Target,
-  ArrowUpRight,
-  ArrowDownRight
+  ArrowUpRight
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { 
@@ -28,37 +27,22 @@ import {
 } from 'recharts';
 
 export default function Analytics() {
-  const { token, nodes } = usePlannerStore();
-  const [stats, setStats] = useState({
-    total: 0,
-    completed: 0,
-    inProgress: 0,
-    notStarted: 0,
-    overallProgress: 0
-  });
+  const { nodes } = usePlannerStore();
 
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const res = await fetch('/api/stats', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (!res.ok) {
-          if (res.status === 401 || res.status === 403) {
-            usePlannerStore.getState().logout();
-          }
-          throw new Error('Failed to fetch stats');
-        }
-        const data = await res.json();
-        // Calculate notStarted locally since API doesn't return it yet
-        const notStarted = data.total - data.completed - data.inProgress;
-        setStats({ ...data, notStarted });
-      } catch (err) {
-        console.error('Failed to fetch stats');
-      }
+  const stats = useMemo(() => {
+    const total = nodes.length;
+    const completed = nodes.filter(node => node.status === 'completed').length;
+    const inProgress = nodes.filter(node => node.status === 'in-progress').length;
+    const notStarted = total - completed - inProgress;
+
+    return {
+      total,
+      completed,
+      inProgress,
+      notStarted,
+      overallProgress: total > 0 ? Math.round((completed / total) * 100) : 0,
     };
-    fetchStats();
-  }, [nodes, token]);
+  }, [nodes]);
 
   const typeData = [
     { name: 'Areas', value: nodes.filter(n => n.type === 'area').length, color: '#ffffff' },
@@ -68,9 +52,9 @@ export default function Analytics() {
   ];
 
   const statusData = [
-    { name: 'Completed', value: stats.completed, color: '#10b981' },
-    { name: 'In Progress', value: stats.inProgress, color: '#3b82f6' },
-    { name: 'Not Started', value: stats.notStarted, color: '#334155' },
+    { name: 'Completed', value: stats.completed, color: '#10b981', dotClass: 'bg-emerald-400' },
+    { name: 'In Progress', value: stats.inProgress, color: '#3b82f6', dotClass: 'bg-blue-400' },
+    { name: 'Not Started', value: stats.notStarted, color: '#334155', dotClass: 'bg-slate-700' },
   ];
 
   const CustomTooltip = ({ active, payload, label }: any) => {
@@ -112,7 +96,7 @@ export default function Analytics() {
               <h2 className="text-lg lg:text-xl font-bold tracking-tight">Node Distribution</h2>
             </div>
           </div>
-          <div className="h-[300px] w-full">
+          <div className="h-75 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={typeData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
@@ -151,7 +135,7 @@ export default function Analytics() {
             <PieChart className="w-5 h-5 text-purple-400" />
             <h2 className="text-lg lg:text-xl font-bold tracking-tight">Status Ratio</h2>
           </div>
-          <div className="flex-1 h-[250px] relative">
+          <div className="flex-1 h-62.5 relative">
             <ResponsiveContainer width="100%" height="100%">
               <RePieChart>
                 <Pie
@@ -179,7 +163,7 @@ export default function Analytics() {
             {statusData.map((item) => (
               <div key={item.name} className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }} />
+                  <div className={cn("w-2 h-2 rounded-full shrink-0", item.dotClass)} />
                   <span className="text-xs text-white/60">{item.name}</span>
                 </div>
                 <span className="text-xs font-bold">{item.value}</span>

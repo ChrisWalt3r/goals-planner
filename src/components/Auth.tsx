@@ -1,36 +1,138 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { usePlannerStore } from '../store';
 import { cn } from '../lib/utils';
-import { LogIn, UserPlus, Cloud } from 'lucide-react';
+import { Cloud, Eye, EyeOff, LogIn, UserPlus } from 'lucide-react';
 import { motion } from 'motion/react';
+import { fetchPlannerNodes, signInWithPassword, signUpWithPassword } from '../lib/plannerApi';
+
+type AuthFeedback = {
+  tone: 'error' | 'success';
+  message: string;
+};
+
+interface PasswordFieldProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  isVisible: boolean;
+  onToggleVisibility: () => void;
+  placeholder: string;
+}
+
+function PasswordField({
+  label,
+  value,
+  onChange,
+  isVisible,
+  onToggleVisibility,
+  placeholder,
+}: PasswordFieldProps) {
+  return (
+    <div>
+      <label className="block text-xs font-medium uppercase tracking-wider text-white/40 mb-1.5 ml-1">{label}</label>
+      <div className="relative">
+        <input
+          type={isVisible ? 'text' : 'password'}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 pr-12 focus:outline-none focus:ring-2 focus:ring-white/20 transition-all"
+          placeholder={placeholder}
+          required
+        />
+        <button
+          type="button"
+          onClick={onToggleVisibility}
+          aria-label={isVisible ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`}
+          className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-white/40 hover:text-white/80 transition-colors"
+        >
+          {isVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function Auth() {
-  const [isLogin, setIsLogin] = useState(true);
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot_password'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [feedback, setFeedback] = useState<AuthFeedback | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const setAuth = usePlannerStore((state) => state.setAuth);
+  const setNodes = usePlannerStore((state) => state.setNodes);
+
+  useEffect(() => {
+    setPassword('');
+    setConfirmPassword('');
+    setShowPassword(false);
+    setShowConfirmPassword(false);
+    setFeedback(null);
+  }, [authMode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
+    setFeedback(null);
+    setIsSubmitting(true);
+
+    const normalizedEmail = email.trim().toLowerCase();
+
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setAuth(data);
-      } else {
-        setError(data.error || 'Something went wrong');
+      if (authMode === 'forgot_password') {
+        const { resetPasswordForEmail } = await import('../lib/plannerApi');
+        await resetPasswordForEmail(normalizedEmail);
+        setFeedback({ tone: 'success', message: 'If an account exists, a password reset email has been sent.' });
+        setIsSubmitting(false);
+        return;
       }
-    } catch (err) {
-      setError('Failed to connect to server');
+
+      if (authMode === 'signup' && password !== confirmPassword) {
+        setFeedback({ tone: 'error', message: 'Passwords do not match.' });
+        setIsSubmitting(false);
+        return;
+      }
+
+      const result = authMode === 'login'
+        ? await signInWithPassword(normalizedEmail, password)
+        : await signUpWithPassword(normalizedEmail, password);
+
+      if (authMode === 'signup' && result.requiresEmailConfirmation) {
+        setFeedback({
+          tone: 'success',
+          message: 'Account created. Check your email to confirm it, then sign in.',
+        });
+        setAuthMode('login');
+        setIsSubmitting(false);
+        return;
+      }
+
+      setAuth({ user: result.user, token: result.token });
+      try {
+        const nodes = await fetchPlannerNodes(result.user.id);
+        setNodes(nodes);
+      } catch (loadError) {
+        console.error('Failed to load nodes after authentication', loadError);
+      }
+    } catch (err: any) {
+      let errorMessage = err instanceof Error ? err.message : 'Failed to authenticate';
+      
+      // Friendly message for rate limits
+      if (errorMessage.toLowerCase().includes('rate limit')) {
+        errorMessage = 'Email rate limit exceeded. Please wait a bit before trying again, or check your Supabase rate limit settings.';
+      }
+
+      setFeedback({
+        tone: 'error',
+        message: errorMessage,
+      });
+    } finally {
+      setIsSubmitting(false);
     }
   };
+
+  const isLogin = authMode === 'login';
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] text-white p-4">
@@ -56,43 +158,90 @@ export default function Auth() {
               onChange={(e) => setEmail(e.target.value)}
               className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-white/20 transition-all"
               placeholder="name@example.com"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium uppercase tracking-wider text-white/40 mb-1.5 ml-1">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-white/20 transition-all"
-              placeholder="••••••••"
+              autoComplete="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               required
             />
           </div>
 
-          {error && (
-            <p className="text-red-400 text-sm text-center bg-red-400/10 py-2 rounded-lg border border-red-400/20">
-              {error}
+          {authMode !== 'forgot_password' && (
+            <PasswordField
+              label="Password"
+              value={password}
+              onChange={setPassword}
+              isVisible={showPassword}
+              onToggleVisibility={() => setShowPassword((current) => !current)}
+              placeholder="••••••••"
+            />
+          )}
+
+          {authMode === 'signup' && (
+            <PasswordField
+              label="Confirm Password"
+              value={confirmPassword}
+              onChange={setConfirmPassword}
+              isVisible={showConfirmPassword}
+              onToggleVisibility={() => setShowConfirmPassword((current) => !current)}
+              placeholder="••••••••"
+            />
+          )}
+
+          {authMode === 'login' && (
+            <div className="flex justify-end px-1 mt-1">
+              <button
+                type="button"
+                onClick={() => setAuthMode('forgot_password')}
+                className="text-xs text-white/50 hover:text-white transition-colors"
+              >
+                Forgot Password?
+              </button>
+            </div>
+          )}
+
+          {feedback && (
+            <p
+              className={cn(
+                'text-sm text-center py-2 rounded-lg border shrink-0',
+                feedback.tone === 'error'
+                  ? 'text-red-300 bg-red-400/10 border-red-400/20'
+                  : 'text-emerald-300 bg-emerald-400/10 border-emerald-400/20'
+              )}
+            >
+              {feedback.message}
             </p>
           )}
 
           <button
             type="submit"
-            className="w-full bg-white text-black font-semibold py-3 rounded-xl hover:bg-white/90 transition-all flex items-center justify-center gap-2 mt-4"
+            disabled={isSubmitting}
+            className="w-full bg-white text-black font-semibold py-3 rounded-xl hover:bg-white/90 transition-all flex items-center justify-center gap-2 mt-4 disabled:opacity-50"
           >
-            {isLogin ? <LogIn className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
-            {isLogin ? 'Sign In' : 'Create Account'}
+            {authMode === 'login' ? <LogIn className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
+            {authMode === 'login' ? 'Sign In' : authMode === 'signup' ? 'Create Account' : 'Send Reset Link'}
           </button>
         </form>
 
-        <div className="mt-6 text-center">
-          <button
-            onClick={() => setIsLogin(!isLogin)}
-            className="text-sm text-white/50 hover:text-white transition-colors"
-          >
-            {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
-          </button>
+        <div className="mt-6 text-center space-y-2">
+          {authMode !== 'login' && (
+            <button
+              onClick={() => setAuthMode('login')}
+              type="button"
+              className="block w-full text-sm text-white/50 hover:text-white transition-colors"
+            >
+              Back to Sign in
+            </button>
+          )}
+          {authMode === 'login' && (
+            <button
+              onClick={() => setAuthMode('signup')}
+              type="button"
+              className="text-sm text-white/50 hover:text-white transition-colors"
+            >
+              Don't have an account? Sign up
+            </button>
+          )}
         </div>
       </motion.div>
     </div>

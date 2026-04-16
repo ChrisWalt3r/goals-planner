@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { PlannerNode, User, AuthState } from './types';
+import { signOut } from './lib/plannerApi';
 
 interface PlannerStore {
   user: User | null;
@@ -30,29 +31,18 @@ const calculateProgress = (nodes: PlannerNode[], parentId: string | null): Plann
     const projects = children.filter(c => c.type === 'project');
     
     if (tasks.length > 0 || projects.length > 0) {
-      let totalItems = tasks.length + projects.length;
-      let completedItems = tasks.filter(t => t.status === 'completed').length;
-      let inProgressItems = tasks.filter(t => t.status === 'in-progress').length;
+      const totalItems = tasks.length + projects.length;
       let totalProgress = 0;
 
       for (const t of tasks) {
-        totalProgress += (t.status === 'completed' ? 100 : 0);
+        totalProgress += t.status === 'completed' ? 100 : t.progress || 0;
       }
       for (const p of projects) {
         totalProgress += (p.progress || 0);
-        if (p.status === 'completed') completedItems++;
-        if (p.status === 'in-progress' || (p.progress > 0 && p.progress < 100)) inProgressItems++;
       }
 
       newProgress = Math.round(totalProgress / totalItems);
-      
-      if (newProgress === 100) {
-        newStatus = 'completed';
-      } else if (inProgressItems > 0 || (completedItems > 0 && completedItems < totalItems)) {
-        newStatus = 'in-progress';
-      } else if (completedItems === 0 && inProgressItems === 0) {
-        newStatus = 'not-started';
-      }
+      newStatus = parent.status;
     }
   } else if (parent.type === 'goal') {
     const projects = children.filter(c => c.type === 'project');
@@ -105,7 +95,10 @@ export const usePlannerStore = create<PlannerStore>()(
       token: null,
       nodes: [],
       setAuth: (auth) => set({ user: auth.user, token: auth.token }),
-      logout: () => set({ user: null, token: null, nodes: [] }),
+      logout: () => {
+        void signOut();
+        set({ user: null, token: null, nodes: [] });
+      },
       setNodes: (nodes) => set({ nodes }),
       addNode: (node) => set((state) => {
         const newNodes = [...state.nodes, node];
