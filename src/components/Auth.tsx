@@ -3,7 +3,7 @@ import { usePlannerStore } from '../store';
 import { cn } from '../lib/utils';
 import { Cloud, Eye, EyeOff, LogIn, UserPlus } from 'lucide-react';
 import { motion } from 'motion/react';
-import { fetchPlannerNodes, signInWithPassword, signUpWithPassword } from '../lib/plannerApi';
+import { signInWithPassword, signUpWithPassword } from '../lib/plannerApi';
 
 type AuthFeedback = {
   tone: 'error' | 'success';
@@ -62,7 +62,6 @@ export default function Auth() {
   const [feedback, setFeedback] = useState<AuthFeedback | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const setAuth = usePlannerStore((state) => state.setAuth);
-  const setNodes = usePlannerStore((state) => state.setNodes);
 
   useEffect(() => {
     setPassword('');
@@ -109,12 +108,6 @@ export default function Auth() {
       }
 
       setAuth({ user: result.user, token: result.token });
-      try {
-        const nodes = await fetchPlannerNodes(result.user.id);
-        setNodes(nodes);
-      } catch (loadError) {
-        console.error('Failed to load nodes after authentication', loadError);
-      }
     } catch (err: any) {
       let errorMessage = err instanceof Error ? err.message : 'Failed to authenticate';
       
@@ -145,7 +138,7 @@ export default function Auth() {
           <div className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mb-4 border border-white/10">
             <Cloud className="w-8 h-8 text-white" />
           </div>
-          <h1 className="text-3xl font-bold tracking-tight">Cloud Planner</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Goal Digger</h1>
           <p className="text-white/50 text-sm mt-2">Visual Planning System</p>
         </div>
 

@@ -6,7 +6,7 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatDeadline(deadline: string | null | undefined, pattern = 'MMM d, yyyy') {
+export function formatDeadline(deadline: string | null | undefined, pattern = 'MMM d, yy') {
   if (!deadline) return '';
 
   const parsed = parseISO(deadline);

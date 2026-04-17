@@ -60,7 +60,7 @@ export default function Sidebar({ activeView, setActiveView, onClose, isCollapse
             </div>
             {!isCollapsed && (
               <div className="min-w-0">
-                <h1 className="text-lg font-bold tracking-tight truncate">Cloud Planner</h1>
+                <h1 className="text-lg font-bold tracking-tight truncate">Goal Digger</h1>
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/30 truncate">System v1.0</p>
               </div>
             )}

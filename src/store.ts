@@ -2,14 +2,18 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { PlannerNode, User, AuthState } from './types';
 import { signOut } from './lib/plannerApi';
+import { collectNodeAndDescendantIds } from './lib/hierarchy';
 
 interface PlannerStore {
   user: User | null;
   token: string | null;
   nodes: PlannerNode[];
+  nodeNoteIds: string[];
   setAuth: (auth: AuthState) => void;
   logout: () => void;
   setNodes: (nodes: PlannerNode[]) => void;
+  setNodeNoteIds: (nodeIds: string[]) => void;
+  setNodeHasNote: (nodeId: string, hasNote: boolean) => void;
   addNode: (node: PlannerNode) => void;
   updateNode: (id: string, updates: Partial<PlannerNode>) => void;
   deleteNode: (id: string) => void;
@@ -42,35 +46,48 @@ const calculateProgress = (nodes: PlannerNode[], parentId: string | null): Plann
       }
 
       newProgress = Math.round(totalProgress / totalItems);
-      newStatus = parent.status;
+      
+      const anyInProgress = tasks.some(t => t.status === 'in-progress' || t.status === 'completed') || 
+                            projects.some(p => p.status === 'in-progress' || p.status === 'completed' || (p.progress > 0 && p.progress < 100));
+      const allCompleted = tasks.every(t => t.status === 'completed') && projects.every(p => p.status === 'completed');
+      const allNotStarted = tasks.every(t => t.status === 'not-started') && projects.every(p => p.status === 'not-started');
+
+      if (allCompleted) {
+        newStatus = 'completed';
+      } else if (!allNotStarted || anyInProgress || newProgress > 0) {
+        newStatus = 'in-progress';
+      } else {
+        newStatus = 'not-started';
+      }
     }
   } else if (parent.type === 'goal') {
     const projects = children.filter(c => c.type === 'project');
     if (projects.length > 0) {
       const totalProgress = projects.reduce((acc, p) => acc + (p.progress || 0), 0);
-      const anyInProgress = projects.some(p => p.status === 'in-progress' || (p.progress > 0 && p.progress < 100));
+      const anyInProgress = projects.some(p => p.status === 'in-progress' || p.status === 'completed' || (p.progress > 0 && p.progress < 100));
+      const allCompleted = projects.every(p => p.status === 'completed');
       const allNotStarted = projects.every(p => p.status === 'not-started');
       
       newProgress = Math.round(totalProgress / projects.length);
       
-      if (newProgress === 100) {
+      if (allCompleted) {
         newStatus = 'completed';
-      } else if (anyInProgress || (newProgress > 0 && newProgress < 100)) {
+      } else if (!allNotStarted || anyInProgress || newProgress > 0) {
         newStatus = 'in-progress';
-      } else if (allNotStarted && newProgress === 0) {
+      } else {
         newStatus = 'not-started';
       }
     }
   } else if (parent.type === 'area') {
     const goals = children.filter(c => c.type === 'goal');
     if (goals.length > 0) {
-      const anyInProgress = goals.some(g => g.status === 'in-progress' || (g.progress > 0 && g.progress < 100));
+      const anyInProgress = goals.some(g => g.status === 'in-progress' || g.status === 'completed' || (g.progress > 0 && g.progress < 100));
       const allNotStarted = goals.every(g => g.status === 'not-started');
       const allCompleted = goals.every(g => g.status === 'completed');
 
       if (allCompleted) {
         newStatus = 'completed';
-      } else if (anyInProgress || !allNotStarted) {
+      } else if (!allNotStarted || anyInProgress) {
         newStatus = 'in-progress';
       } else {
         newStatus = 'not-started';
@@ -94,12 +111,22 @@ export const usePlannerStore = create<PlannerStore>()(
       user: null,
       token: null,
       nodes: [],
+      nodeNoteIds: [],
       setAuth: (auth) => set({ user: auth.user, token: auth.token }),
       logout: () => {
         void signOut();
-        set({ user: null, token: null, nodes: [] });
+        set({ user: null, token: null, nodes: [], nodeNoteIds: [] });
       },
       setNodes: (nodes) => set({ nodes }),
+      setNodeNoteIds: (nodeIds) => set({ nodeNoteIds: [...new Set(nodeIds)] }),
+      setNodeHasNote: (nodeId, hasNote) =>
+        set((state) => {
+          const nextIds = new Set(state.nodeNoteIds);
+          if (hasNote) nextIds.add(nodeId);
+          else nextIds.delete(nodeId);
+
+          return { nodeNoteIds: [...nextIds] };
+        }),
       addNode: (node) => set((state) => {
         const newNodes = [...state.nodes, node];
         return { nodes: calculateProgress(newNodes, node.parent_id) };
@@ -119,8 +146,15 @@ export const usePlannerStore = create<PlannerStore>()(
       deleteNode: (id) =>
         set((state) => {
           const node = state.nodes.find(n => n.id === id);
-          const filteredNodes = state.nodes.filter((n) => n.id !== id);
-          return { nodes: calculateProgress(filteredNodes, node?.parent_id || null) };
+          const idsToDelete = new Set(collectNodeAndDescendantIds(state.nodes, id));
+          const filteredNodes = state.nodes
+            .filter((n) => !idsToDelete.has(n.id))
+            .map((n) => ({
+              ...n,
+              dependency_ids: (n.dependency_ids ?? []).filter((dependencyId) => !idsToDelete.has(dependencyId) && dependencyId !== n.id),
+            }));
+          const noteIds = state.nodeNoteIds.filter((noteId) => !idsToDelete.has(noteId));
+          return { nodes: calculateProgress(filteredNodes, node?.parent_id || null), nodeNoteIds: noteIds };
         }),
       recalculateProgress: (parentId) => set((state) => ({ nodes: calculateProgress(state.nodes, parentId) })),
     }),

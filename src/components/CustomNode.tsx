@@ -2,7 +2,7 @@ import React, { memo, useCallback, useEffect, useRef } from 'react';
 import { Handle, Position, NodeProps, Node } from '@xyflow/react';
 import { cn, formatDeadline } from '../lib/utils';
 import { NodeType, PlannerNode } from '../types';
-import { CheckCircle2, Circle, Clock, ChevronDown, EyeOff, Plus } from 'lucide-react';
+import { CheckCircle2, Circle, Clock, ChevronDown, EyeOff, Plus, FileText, Link2 } from 'lucide-react';
 
 type PlannerNodeData = {
   node: PlannerNode;
@@ -10,6 +10,8 @@ type PlannerNodeData = {
   isTaskListHidden?: boolean;
   hasTaskChildren?: boolean;
   childrenTasks?: PlannerNode[];
+  hasNote?: boolean;
+  dependencyCount?: number;
   onAddTask?: () => void;
   onToggleTask?: (taskId: string) => void;
   onTaskClick?: (task: PlannerNode) => void;
@@ -26,6 +28,8 @@ const CustomNode = ({ data, selected }: CustomNodeProps) => {
     isTaskListHidden,
     hasTaskChildren,
     childrenTasks,
+    hasNote,
+    dependencyCount,
     onAddTask,
     onToggleTask,
     onTaskClick,
@@ -117,6 +121,24 @@ const CustomNode = ({ data, selected }: CustomNodeProps) => {
       onContextMenu={handleContextMenu}
     >
       <Handle type="target" position={Position.Top} className="opacity-0" />
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="dependency-target"
+        className={cn(
+          'w-3 h-3 rounded-full border border-white/50 bg-purple-500 shadow-lg transition-opacity',
+          selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        )}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="dependency-source"
+        className={cn(
+          'w-3 h-3 rounded-full border border-white/50 bg-purple-500 shadow-lg transition-opacity',
+          selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        )}
+      />
       
       {node.type !== 'task' && (
         <button
@@ -136,11 +158,22 @@ const CustomNode = ({ data, selected }: CustomNodeProps) => {
           <div className="flex items-center gap-2 mb-1">
             <span className="text-[10px] font-bold uppercase tracking-widest opacity-40">{node.type}</span>
             {node.status === 'completed' && <span className="w-1 h-1 rounded-full bg-emerald-400" />}
+            {hasNote && node.type !== 'task' && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/20 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-200">
+                <FileText className="w-2.5 h-2.5" />
+              </span>
+            )}
           </div>
           <h3 className="font-semibold text-sm truncate leading-tight">{node.title}</h3>
         </div>
         <div className="mt-1 flex flex-col items-end gap-1">
           {getStatusIcon()}
+          {!!dependencyCount && dependencyCount > 0 && (
+            <div className="inline-flex items-center gap-1 rounded-full border border-purple-400/20 bg-purple-400/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-purple-200">
+              <Link2 className="w-3 h-3" />
+              <span>{dependencyCount}</span>
+            </div>
+          )}
           {isCollapsed && (
             <div className="bg-white/10 rounded-full p-0.5">
               <ChevronDown className="w-3 h-3 text-white/60 rotate-180" />
@@ -169,7 +202,7 @@ const CustomNode = ({ data, selected }: CustomNodeProps) => {
             <span className="text-[10px] opacity-40 font-medium">{node.progress}%</span>
             {node.deadline && (
               <span className="text-[10px] opacity-40 font-medium">
-                {formatDeadline(node.deadline, 'MMM d')}
+                {formatDeadline(node.deadline)}
               </span>
             )}
           </div>

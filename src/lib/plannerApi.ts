@@ -1,6 +1,7 @@
 import { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { PlannerNode, NodeStatus, NodeType, User } from '../types';
+import { collectNodeAndDescendantIds, collectOrphanNodeIds } from './hierarchy';
 
 interface PlannerNodeRow {
   id: string;
@@ -15,6 +16,7 @@ interface PlannerNodeRow {
   position_x: number | null;
   position_y: number | null;
   tags: string[] | null;
+  dependency_ids: string[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -30,6 +32,39 @@ const stripUndefined = <T extends Record<string, unknown>>(value: T) => {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined)
   ) as Partial<T>;
+};
+
+const RETRY_DELAYS_MS = [250, 700, 1400];
+
+const isTransientSupabaseError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /429|too many requests|lock|aborterror|steal|timeout|network|fetch/i.test(message);
+};
+
+const withSupabaseRetry = async <T extends { error: unknown }>(
+  operation: () => Promise<T>,
+  maxAttempts = 3
+): Promise<T> => {
+  let attempt = 0;
+
+  while (true) {
+    const result = await operation();
+
+    if (!result.error) return result;
+
+    attempt += 1;
+    if (attempt >= maxAttempts || !isTransientSupabaseError(result.error)) {
+      return result;
+    }
+
+    const delay = RETRY_DELAYS_MS[Math.min(attempt - 1, RETRY_DELAYS_MS.length - 1)];
+    await new Promise((resolve) => window.setTimeout(resolve, delay));
+  }
+};
+
+const isMissingDependencyColumnError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /dependency_ids|column .* does not exist/i.test(message);
 };
 
 const mapUser = (user: SupabaseUser): User => ({
@@ -68,11 +103,12 @@ const mapNode = (row: PlannerNodeRow): PlannerNode => ({
   position_x: row.position_x ?? 0,
   position_y: row.position_y ?? 0,
   tags: Array.isArray(row.tags) ? row.tags : [],
+  dependency_ids: Array.isArray(row.dependency_ids) ? [...new Set(row.dependency_ids)] : [],
   created_at: row.created_at,
   updated_at: row.updated_at,
 });
 
-const buildNodePayload = (node: PlannerNode) => ({
+const buildNodePayload = (node: PlannerNode, includeDependencies = true) => ({
   id: node.id,
   parent_id: node.parent_id,
   type: node.type,
@@ -84,6 +120,7 @@ const buildNodePayload = (node: PlannerNode) => ({
   position_x: node.position_x,
   position_y: node.position_y,
   tags: node.tags,
+  ...(includeDependencies ? { dependency_ids: node.dependency_ids ?? [] } : {}),
   created_at: node.created_at,
   updated_at: node.updated_at,
 });
@@ -163,16 +200,51 @@ export async function fetchPlannerNodes(userId: string) {
     .order('created_at', { ascending: true });
 
   if (error) throw error;
-  return (data ?? []).map((row) => mapNode(row as PlannerNodeRow));
+  const nodes = (data ?? []).map((row) => mapNode(row as PlannerNodeRow));
+  const orphanIds = collectOrphanNodeIds(nodes);
+
+  if (orphanIds.length > 0) {
+    const { error: deleteError } = await supabase
+      .from('nodes')
+      .delete()
+      .in('id', orphanIds)
+      .eq('user_id', userId);
+
+    if (deleteError) throw deleteError;
+  }
+
+  return nodes.filter((node) => !orphanIds.includes(node.id));
+}
+
+export async function fetchPlannerNoteNodeIds(userId: string) {
+  const { data, error } = await supabase
+    .from('notes')
+    .select('node_id, content')
+    .eq('user_id', userId);
+
+  if (error) throw error;
+
+  return (data ?? [])
+    .filter((row) => typeof row.content === 'string' && row.content.trim().length > 0)
+    .map((row) => row.node_id as string);
 }
 
 export async function createPlannerNode(node: PlannerNode, userId?: string) {
   const resolvedUserId = await resolveUserId(userId);
-  const { error } = await supabase.from('nodes').insert({
+  const primaryResult = await withSupabaseRetry(() => supabase.from('nodes').insert({
     ...buildNodePayload(node),
     user_id: resolvedUserId,
-  });
-  if (error) throw error;
+  }));
+
+  if (!primaryResult.error) return;
+  if (!isMissingDependencyColumnError(primaryResult.error)) throw primaryResult.error;
+
+  const fallbackResult = await withSupabaseRetry(() => supabase.from('nodes').insert({
+    ...buildNodePayload(node, false),
+    user_id: resolvedUserId,
+  }));
+
+  if (fallbackResult.error) throw fallbackResult.error;
 }
 
 export async function updatePlannerNode(nodeId: string, updates: Partial<PlannerNode>, userId?: string) {
@@ -188,17 +260,79 @@ export async function updatePlannerNode(nodeId: string, updates: Partial<Planner
     position_x: updates.position_x,
     position_y: updates.position_y,
     tags: updates.tags,
+    dependency_ids: updates.dependency_ids,
     updated_at: new Date().toISOString(),
   });
 
-  const { error } = await supabase.from('nodes').update(payload).eq('id', nodeId).eq('user_id', resolvedUserId);
-  if (error) throw error;
+  const primaryResult = await withSupabaseRetry(() => supabase.from('nodes').update(payload).eq('id', nodeId).eq('user_id', resolvedUserId));
+  if (!primaryResult.error) return;
+
+  if (!isMissingDependencyColumnError(primaryResult.error) || !('dependency_ids' in payload)) throw primaryResult.error;
+
+  const fallbackPayload = stripUndefined({
+    parent_id: updates.parent_id,
+    type: updates.type,
+    title: updates.title,
+    description: updates.description,
+    status: updates.status,
+    progress: updates.progress,
+    deadline: updates.deadline,
+    position_x: updates.position_x,
+    position_y: updates.position_y,
+    tags: updates.tags,
+    updated_at: new Date().toISOString(),
+  });
+
+  const fallbackResult = await withSupabaseRetry(() => supabase.from('nodes').update(fallbackPayload).eq('id', nodeId).eq('user_id', resolvedUserId));
+  if (fallbackResult.error) throw fallbackResult.error;
 }
 
 export async function deletePlannerNode(nodeId: string, userId?: string) {
   const resolvedUserId = await resolveUserId(userId);
-  const { error } = await supabase.from('nodes').delete().eq('id', nodeId).eq('user_id', resolvedUserId);
+  const dependencyAwareSelect = await supabase
+    .from('nodes')
+    .select('id, parent_id, dependency_ids')
+    .eq('user_id', resolvedUserId);
+
+  let data: any = dependencyAwareSelect.data;
+  let fetchError = dependencyAwareSelect.error;
+
+  if (fetchError && isMissingDependencyColumnError(fetchError)) {
+    const fallbackSelect = await supabase
+      .from('nodes')
+      .select('id, parent_id')
+      .eq('user_id', resolvedUserId);
+
+    data = fallbackSelect.data;
+    fetchError = fallbackSelect.error;
+  }
+
+  if (fetchError) throw fetchError;
+
+  const nodes = (data ?? []) as PlannerNode[];
+  const idsToDelete = collectNodeAndDescendantIds(nodes, nodeId);
+  const { error } = await supabase.from('nodes').delete().in('id', idsToDelete).eq('user_id', resolvedUserId);
   if (error) throw error;
+
+  const removedIdSet = new Set(idsToDelete);
+  const remainingNodes = nodes.filter((node) => !removedIdSet.has(node.id));
+
+  for (const remainingNode of remainingNodes) {
+    const nextDependencyIds = (remainingNode.dependency_ids ?? []).filter((dependencyId) => !removedIdSet.has(dependencyId) && dependencyId !== remainingNode.id);
+    const currentDependencyIds = remainingNode.dependency_ids ?? [];
+
+    if (nextDependencyIds.length === currentDependencyIds.length && nextDependencyIds.every((dependencyId, index) => dependencyId === currentDependencyIds[index])) {
+      continue;
+    }
+
+    const { error: updateError } = await supabase
+      .from('nodes')
+      .update({ dependency_ids: nextDependencyIds, updated_at: new Date().toISOString() })
+      .eq('id', remainingNode.id)
+      .eq('user_id', resolvedUserId);
+
+    if (updateError) throw updateError;
+  }
 }
 
 export async function fetchPlannerNote(nodeId: string, userId?: string) {
@@ -217,12 +351,12 @@ export async function fetchPlannerNote(nodeId: string, userId?: string) {
 
 export async function savePlannerNote(nodeId: string, content: string, userId?: string) {
   const resolvedUserId = await resolveUserId(userId);
-  const { error } = await supabase.from('notes').upsert({
+  const result = await withSupabaseRetry(() => supabase.from('notes').upsert({
     node_id: nodeId,
     user_id: resolvedUserId,
     content,
     updated_at: new Date().toISOString(),
-  });
+  }));
 
-  if (error) throw error;
+  if (result.error) throw result.error;
 }

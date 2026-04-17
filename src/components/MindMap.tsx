@@ -16,7 +16,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { usePlannerStore } from '../store';
 import CustomNode from './CustomNode';
-import { PlannerNode, NodeType } from '../types';
+import { PlannerNode, NodeStatus, NodeType } from '../types';
 import { Plus, Search, LayoutGrid, List, Filter, Eye, EyeOff, Maximize2, Minimize2, X, Expand, Shrink } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -173,27 +173,21 @@ interface MindMapProps {
 }
 
 export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onToggleFullscreen }: MindMapProps) {
-  const { nodes: storeNodes, addNode, updateNode, user } = usePlannerStore();
+  const { nodes: storeNodes, addNode, updateNode, user, nodeNoteIds } = usePlannerStore();
   const userId = user?.id;
   const [nodes, setNodesState, onNodesChange] = useNodesState<Node<PlannerNodeData>>([]);
   const [edges, setEdgesState, onEdgesChange] = useEdgesState<Edge>([]);
   const [reactFlowInstance, setReactFlowInstance] = React.useState<any>(null);
   const [searchQuery, setSearchQuery] = React.useState('');
   const [selectedFilters, setSelectedFilters] = React.useState<Set<NodeType>>(new Set(['area', 'goal', 'project', 'task']));
+  const [selectedStatusFilters, setSelectedStatusFilters] = React.useState<Set<NodeStatus>>(new Set(['not-started', 'in-progress', 'completed']));
   const [focusNodeId, setFocusNodeId] = React.useState<string | null>(null);
   const [collapsedNodeIds, setCollapsedNodeIds] = React.useState<Set<string>>(new Set());
   const [hiddenTaskProjectIds, setHiddenTaskProjectIds] = React.useState<Set<string>>(new Set());
+  const [revealedNodeIds, setRevealedNodeIds] = React.useState<Set<string>>(new Set());
   const [menu, setMenu] = React.useState<{ x: number, y: number, nodeId: string, nodeType: NodeType } | null>(null);
   const [addChildPanel, setAddChildPanel] = React.useState<{ parentId: string; childType: NodeType } | null>(null);
-
-  useEffect(() => {
-    if (!selectedNode) {
-      setFocusNodeId(null);
-      return;
-    }
-
-    setFocusNodeId(selectedNode.type === 'task' ? selectedNode.parent_id ?? null : selectedNode.id);
-  }, [selectedNode]);
+  const noteNodeIdSet = React.useMemo(() => new Set(nodeNoteIds), [nodeNoteIds]);
 
   useEffect(() => {
     if (!reactFlowInstance || !focusNodeId) return;
@@ -240,30 +234,111 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
     return false;
   }, [storeNodes, collapsedNodeIds]);
 
+  const getDirectChildIds = useCallback((parentId: string) => {
+    return storeNodes.filter(candidate => candidate.parent_id === parentId).map(child => child.id);
+  }, [storeNodes]);
+
+  const matchesSearch = useCallback((node: PlannerNode) => {
+    if (!searchQuery) return true;
+    const query = searchQuery.toLowerCase();
+    return node.title.toLowerCase().includes(query) || (node.description || '').toLowerCase().includes(query);
+  }, [searchQuery]);
+
+  const isStructuralNodeVisible = useCallback((node: PlannerNode) => {
+    if (focusNodeId && node.id !== focusNodeId && !isDescendant(node.id, focusNodeId)) return false;
+    if (revealedNodeIds.has(node.id)) return true;
+    if (node.type === 'task') return false;
+    if (!matchesSearch(node)) return false;
+    if (!selectedFilters.has(node.type)) return false;
+    if (!selectedStatusFilters.has(node.status)) return false;
+    if (isCollapsed(node.id)) return false;
+
+    return true;
+  }, [focusNodeId, isCollapsed, isDescendant, matchesSearch, revealedNodeIds, selectedFilters, selectedStatusFilters]);
+
+  const isTaskVisibleInProject = useCallback((task: PlannerNode, projectId: string) => {
+    if (revealedNodeIds.has(task.id)) return true;
+    if (task.type !== 'task') return false;
+    if (!matchesSearch(task)) return false;
+    if (!selectedFilters.has('task')) return false;
+    if (!selectedStatusFilters.has(task.status)) return false;
+    if (hiddenTaskProjectIds.has(projectId)) return false;
+
+    return true;
+  }, [hiddenTaskProjectIds, matchesSearch, revealedNodeIds, selectedFilters, selectedStatusFilters]);
+
+  const revealChildren = useCallback((nodeId: string) => {
+    const directChildIds = getDirectChildIds(nodeId);
+
+    setCollapsedNodeIds(prev => {
+      const next = new Set(prev);
+      next.delete(nodeId);
+      return next;
+    });
+
+    setHiddenTaskProjectIds(prev => {
+      const next = new Set(prev);
+      next.delete(nodeId);
+      return next;
+    });
+
+    setRevealedNodeIds(prev => {
+      const next = new Set(prev);
+      for (const childId of directChildIds) {
+        next.add(childId);
+      }
+      return next;
+    });
+
+    setMenu(null);
+  }, [getDirectChildIds]);
+
   const openNodeMenu = useCallback((nodeId: string, nodeType: NodeType, x: number, y: number) => {
     if (nodeType !== 'area' && nodeType !== 'goal' && nodeType !== 'project') return;
     setMenu({ x, y, nodeId, nodeType });
   }, []);
 
   const toggleBranchCollapse = useCallback((nodeId: string) => {
+    const directChildIds = getDirectChildIds(nodeId);
+
     setCollapsedNodeIds(prev => {
       const next = new Set(prev);
       if (next.has(nodeId)) next.delete(nodeId);
       else next.add(nodeId);
       return next;
     });
+
+    setRevealedNodeIds(prev => {
+      const next = new Set(prev);
+      for (const childId of directChildIds) {
+        next.delete(childId);
+      }
+      return next;
+    });
+
     setMenu(null);
-  }, []);
+  }, [getDirectChildIds]);
 
   const toggleProjectTasks = useCallback((projectId: string) => {
+    const directChildIds = getDirectChildIds(projectId);
+
     setHiddenTaskProjectIds(prev => {
       const next = new Set(prev);
       if (next.has(projectId)) next.delete(projectId);
       else next.add(projectId);
       return next;
     });
+
+    setRevealedNodeIds(prev => {
+      const next = new Set(prev);
+      for (const childId of directChildIds) {
+        next.delete(childId);
+      }
+      return next;
+    });
+
     setMenu(null);
-  }, []);
+  }, [getDirectChildIds]);
 
   const openAddChildPanel = useCallback((parentId: string) => {
     const parentNode = storeNodes.find(node => node.id === parentId);
@@ -370,29 +445,8 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
 
   // Sync store nodes to React Flow nodes with filtering
   useEffect(() => {
-    const filteredStoreNodes = storeNodes.filter(node => {
-      // 0. Don't render tasks as separate nodes
-      if (node.type === 'task') return false;
-
-      // 1. Search Filter
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
-        if (!node.title.toLowerCase().includes(query) && !node.description?.toLowerCase().includes(query)) {
-          return false;
-        }
-      }
-
-      // 2. Type Filter
-      if (!selectedFilters.has(node.type)) return false;
-
-      // 3. Focus Filter
-      if (focusNodeId && node.id !== focusNodeId && !isDescendant(node.id, focusNodeId)) return false;
-
-      // 4. Collapse Filter
-      if (isCollapsed(node.id)) return false;
-
-      return true;
-    });
+    const filteredStoreNodes = storeNodes.filter((node) => isStructuralNodeVisible(node));
+    const visibleNodeIds = new Set(filteredStoreNodes.map((node) => node.id));
 
     const getVisibleParent = (nodeId: string): string | null => {
       let current = storeNodes.find(n => n.id === nodeId);
@@ -409,10 +463,8 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
     };
 
     const flowNodes: Node<PlannerNodeData>[] = filteredStoreNodes.map((node) => {
-      const projectTasks = storeNodes.filter(n => n.parent_id === node.id && n.type === 'task');
-      const childrenTasks = node.type === 'project' && selectedFilters.has('task') && !hiddenTaskProjectIds.has(node.id)
-        ? projectTasks
-        : [];
+      const projectTasks = storeNodes.filter(n => n.parent_id === node.id && isTaskVisibleInProject(n, node.id));
+      const childrenTasks = node.type === 'project' ? projectTasks : [];
 
       return {
         id: node.id,
@@ -424,6 +476,8 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
           isTaskListHidden: node.type === 'project' && hiddenTaskProjectIds.has(node.id),
           hasTaskChildren: projectTasks.length > 0,
           childrenTasks,
+          hasNote: noteNodeIdSet.has(node.id),
+          dependencyCount: node.dependency_ids?.length ?? 0,
           onAddTask: () => createNewNode('task', node.id),
           onToggleTask: (taskId: string) => toggleTaskStatus(taskId),
           onTaskClick: (task: PlannerNode) => onNodeSelect(task),
@@ -448,6 +502,24 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
       })
       .filter(Boolean) as Edge[];
 
+    const dependencyEdges: Edge[] = filteredStoreNodes.flatMap((node) => {
+      const dependencyIds = (node.dependency_ids ?? []).filter((dependencyId) => visibleNodeIds.has(dependencyId));
+
+      return dependencyIds.map((dependencyId) => ({
+        id: `dep-${dependencyId}-${node.id}`,
+        source: dependencyId,
+        target: node.id,
+        type: 'smoothstep',
+        animated: false,
+        style: {
+          stroke: 'rgba(168,85,247,0.9)',
+          strokeWidth: 2,
+          strokeDasharray: '6 6',
+        },
+        markerEnd: { type: MarkerType.ArrowClosed, color: 'rgba(168,85,247,0.9)' },
+      }));
+    });
+
     setNodesState((prevNodes) => {
       // Merge with previous nodes to retain React Flow's internal states like `measured`, `selected`, and `dragging` offsets
       return flowNodes.map((newNode) => {
@@ -458,11 +530,29 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
         return newNode;
       });
     });
-    setEdgesState(flowEdges);
-  }, [storeNodes, setNodesState, setEdgesState, selectedFilters, searchQuery, focusNodeId, collapsedNodeIds, hiddenTaskProjectIds, isDescendant, isCollapsed, openNodeMenu, openAddChildPanel]);
+    setEdgesState([...flowEdges, ...dependencyEdges]);
+  }, [storeNodes, setNodesState, setEdgesState, isStructuralNodeVisible, isTaskVisibleInProject, noteNodeIdSet, collapsedNodeIds, hiddenTaskProjectIds, openNodeMenu, openAddChildPanel]);
 
   const onConnect = useCallback(
     (params: Connection) => {
+      const isDependencyConnection = params.sourceHandle === 'dependency-source' || params.targetHandle === 'dependency-target';
+
+      if (isDependencyConnection) {
+        const sourceNode = storeNodes.find(n => n.id === params.source);
+        const targetNode = storeNodes.find(n => n.id === params.target);
+
+        if (!sourceNode || !targetNode) return;
+        if (sourceNode.id === targetNode.id) return;
+
+        const dependencyIds = Array.from(new Set([...(targetNode.dependency_ids ?? []), sourceNode.id]));
+        const updates = { dependency_ids: dependencyIds };
+
+        updateNode(targetNode.id, updates);
+        void updatePlannerNode(targetNode.id, updates, userId);
+        setEdgesState((eds) => addEdge({ ...params, type: 'smoothstep', animated: false }, eds));
+        return;
+      }
+
       if (isValidConnection(params)) {
         setEdgesState((eds) => addEdge(params, eds));
         // Also update the store
@@ -513,7 +603,6 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
 
   const reorganizeNodes = useCallback(async () => {
     setMenu(null);
-    setFocusNodeId(null);
 
     try {
       const layoutPositions = buildNodeLayout(storeNodes);
@@ -550,6 +639,26 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
     if (!addChildParentNode) return [] as NodeType[];
     return getAllowedStructuralChildTypes(addChildParentNode.type);
   }, [addChildParentNode]);
+
+  const menuDirectChildren = React.useMemo(() => {
+    if (!menu) return [] as PlannerNode[];
+    return storeNodes.filter(node => node.parent_id === menu.nodeId);
+  }, [menu, storeNodes]);
+
+  const menuHiddenStructuralChildren = React.useMemo(() => {
+    if (!menu) return [] as PlannerNode[];
+    return menuDirectChildren.filter(child => child.type !== 'task' && !isStructuralNodeVisible(child));
+  }, [isStructuralNodeVisible, menu, menuDirectChildren]);
+
+  const menuProjectTasks = React.useMemo(() => {
+    if (!menu) return [] as PlannerNode[];
+    return menuDirectChildren.filter(child => child.type === 'task');
+  }, [menu, menuDirectChildren]);
+
+  const menuHiddenProjectTasks = React.useMemo(() => {
+    if (!menu) return [] as PlannerNode[];
+    return menuProjectTasks.filter(task => !isTaskVisibleInProject(task, menu.nodeId));
+  }, [isTaskVisibleInProject, menu, menuProjectTasks]);
 
   return (
     <div className="w-full h-full bg-[#0a0a0a]">
@@ -617,7 +726,17 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
                 <button 
                   onClick={() => {
                     if (menu.nodeType === 'project') {
+                      if (menuHiddenProjectTasks.length > 0 || hiddenTaskProjectIds.has(menu.nodeId)) {
+                        revealChildren(menu.nodeId);
+                        return;
+                      }
+
                       toggleProjectTasks(menu.nodeId);
+                      return;
+                    }
+
+                    if (menuHiddenStructuralChildren.length > 0 || collapsedNodeIds.has(menu.nodeId)) {
+                      revealChildren(menu.nodeId);
                       return;
                     }
 
@@ -626,15 +745,15 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
                   className="w-full flex items-center gap-3 px-3 py-2 hover:bg-white/5 rounded-lg transition-colors text-xs font-medium text-white/70 hover:text-white"
                 >
                   {menu.nodeType === 'project' ? (
-                    hiddenTaskProjectIds.has(menu.nodeId) ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />
+                    (menuHiddenProjectTasks.length > 0 || hiddenTaskProjectIds.has(menu.nodeId)) ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />
                   ) : (
-                    collapsedNodeIds.has(menu.nodeId) ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />
+                    (menuHiddenStructuralChildren.length > 0 || collapsedNodeIds.has(menu.nodeId)) ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />
                   )}
                   {menu.nodeType === 'project'
-                    ? hiddenTaskProjectIds.has(menu.nodeId)
+                    ? (menuHiddenProjectTasks.length > 0 || hiddenTaskProjectIds.has(menu.nodeId))
                       ? 'Show Tasks'
                       : 'Hide Tasks'
-                    : collapsedNodeIds.has(menu.nodeId)
+                    : (menuHiddenStructuralChildren.length > 0 || collapsedNodeIds.has(menu.nodeId))
                       ? 'Show Children'
                       : 'Hide Children'}
                 </button>
@@ -644,46 +763,10 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
         </AnimatePresence>
 
         {!isFullscreen && (
-          <>
-            <Panel position="top-right" className="hidden lg:flex justify-end">
-              <div className="flex flex-wrap justify-end bg-[#1a1a1a] border border-white/10 rounded-xl p-1 shadow-2xl backdrop-blur-xl max-w-full">
-                <button 
-                  onClick={() => {
-                    const canAttachToSelected = selectedNode && getAllowedParentTypes('area').includes(selectedNode.type);
-                    const parentId = canAttachToSelected ? selectedNode.id : null;
-                    createNewNode('area', parentId);
-                  }}
-                  className="p-2 hover:bg-white/5 rounded-lg transition-colors text-white/60 hover:text-white flex items-center gap-1 lg:gap-2 text-[10px] lg:text-xs font-medium whitespace-nowrap"
-                >
-                  <Plus className="w-3 h-3 lg:w-4 lg:h-4" /> Area
-                </button>
-                <div className="w-px bg-white/10 mx-1 my-2" />
-                <button 
-                  onClick={() => {
-                    const canAttachToSelected = selectedNode && getAllowedParentTypes('goal').includes(selectedNode.type);
-                    const parentId = canAttachToSelected ? selectedNode.id : null;
-                    createNewNode('goal', parentId);
-                  }}
-                  className="p-2 hover:bg-white/5 rounded-lg transition-colors text-white/60 hover:text-white flex items-center gap-1 lg:gap-2 text-[10px] lg:text-xs font-medium whitespace-nowrap"
-                >
-                  <Plus className="w-3 h-3 lg:w-4 lg:h-4" /> Goal
-                </button>
-                <div className="w-px bg-white/10 mx-1 my-2" />
-                <button 
-                  onClick={() => {
-                    const canAttachToSelected = selectedNode && getAllowedParentTypes('project').includes(selectedNode.type);
-                    const parentId = canAttachToSelected ? selectedNode.id : null;
-                    createNewNode('project', parentId);
-                  }}
-                  className="p-2 hover:bg-white/5 rounded-lg transition-colors text-white/60 hover:text-white flex items-center gap-1 lg:gap-2 text-[10px] lg:text-xs font-medium whitespace-nowrap"
-                >
-                  <Plus className="w-3 h-3 lg:w-4 lg:h-4" /> Project
-                </button>
-              </div>
-            </Panel>
-
-            <Panel position="top-left" className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              <div className="relative group w-full sm:w-64">
+          <Panel position="top-left" className="flex flex-col gap-3">
+            {/* Search and Filters Row */}
+            <div className="flex flex-col xl:flex-row gap-3">
+              <div className="relative group w-full xl:w-64 shrink-0">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 group-focus-within:text-white/60 transition-colors" />
                 <input 
                   type="text" 
@@ -751,56 +834,108 @@ export default function MindMap({ onNodeSelect, selectedNode, isFullscreen, onTo
                 >
                   Tasks
                 </button>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2 w-full lg:hidden">
-                <button 
-                  onClick={() => {
-                    const canAttachToSelected = selectedNode && getAllowedParentTypes('area').includes(selectedNode.type);
-                    const parentId = canAttachToSelected ? selectedNode.id : null;
-                    createNewNode('area', parentId);
-                  }}
-                  className="flex items-center justify-center gap-1 rounded-xl border border-white/10 bg-[#1a1a1a] px-3 py-2 text-[10px] font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  <Plus className="w-3 h-3" /> Area
-                </button>
-                <button 
-                  onClick={() => {
-                    const canAttachToSelected = selectedNode && getAllowedParentTypes('goal').includes(selectedNode.type);
-                    const parentId = canAttachToSelected ? selectedNode.id : null;
-                    createNewNode('goal', parentId);
-                  }}
-                  className="flex items-center justify-center gap-1 rounded-xl border border-white/10 bg-[#1a1a1a] px-3 py-2 text-[10px] font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  <Plus className="w-3 h-3" /> Goal
-                </button>
-                <button 
-                  onClick={() => {
-                    const canAttachToSelected = selectedNode && getAllowedParentTypes('project').includes(selectedNode.type);
-                    const parentId = canAttachToSelected ? selectedNode.id : null;
-                    createNewNode('project', parentId);
-                  }}
-                  className="flex items-center justify-center gap-1 rounded-xl border border-white/10 bg-[#1a1a1a] px-3 py-2 text-[10px] font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  <Plus className="w-3 h-3" /> Project
-                </button>
-              </div>
-
-              {focusNodeId && (
-                <div className="flex bg-blue-500/20 border border-blue-500/30 rounded-xl p-1 shadow-2xl backdrop-blur-xl items-center gap-2 px-3 py-1.5">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Focused View</span>
-                  <button 
-                    onClick={() => setFocusNodeId(null)}
-                    title="Clear focused view"
-                    aria-label="Clear focused view"
-                    className="p-1 hover:bg-white/10 rounded-lg transition-colors text-blue-400"
+                <div className="flex flex-wrap items-center bg-[#1a1a1a] border border-white/10 rounded-xl p-1 shadow-2xl backdrop-blur-xl gap-1 max-w-full">
+                  <span className="hidden sm:inline-flex items-center gap-1 px-2 text-[10px] font-bold uppercase tracking-widest text-white/25">
+                    <Filter className="w-3 h-3" /> Status
+                  </span>
+                  <button
+                    onClick={() => {
+                      const newFilters = new Set(selectedStatusFilters);
+                      if (newFilters.has('completed')) newFilters.delete('completed');
+                      else newFilters.add('completed');
+                      setSelectedStatusFilters(newFilters);
+                    }}
+                    className={cn(
+                      'p-2 rounded-lg transition-all text-[10px] lg:text-xs font-bold uppercase tracking-widest whitespace-nowrap',
+                      selectedStatusFilters.has('completed') ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'
+                    )}
                   >
-                    <X className="w-3 h-3" />
+                    Completed
+                  </button>
+                  <button
+                    onClick={() => {
+                      const newFilters = new Set(selectedStatusFilters);
+                      if (newFilters.has('in-progress')) newFilters.delete('in-progress');
+                      else newFilters.add('in-progress');
+                      setSelectedStatusFilters(newFilters);
+                    }}
+                    className={cn(
+                      'p-2 rounded-lg transition-all text-[10px] lg:text-xs font-bold uppercase tracking-widest whitespace-nowrap',
+                      selectedStatusFilters.has('in-progress') ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'
+                    )}
+                  >
+                    In Progress
+                  </button>
+                  <button
+                    onClick={() => {
+                      const newFilters = new Set(selectedStatusFilters);
+                      if (newFilters.has('not-started')) newFilters.delete('not-started');
+                      else newFilters.add('not-started');
+                      setSelectedStatusFilters(newFilters);
+                    }}
+                    className={cn(
+                      'p-2 rounded-lg transition-all text-[10px] lg:text-xs font-bold uppercase tracking-widest whitespace-nowrap',
+                      selectedStatusFilters.has('not-started') ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'
+                    )}
+                  >
+                    Not Started
                   </button>
                 </div>
-              )}
+              </div>
+            </div>
+
+            {/* Action Buttons and Context Row */}
+            <div className="flex flex-col sm:flex-row gap-3">
+                <div className="grid grid-cols-3 gap-2 w-full sm:w-auto sm:flex sm:flex-wrap bg-[#1a1a1a] border border-white/10 rounded-xl p-1 shadow-2xl backdrop-blur-xl">
+                  <button 
+                    onClick={() => {
+                      const canAttachToSelected = selectedNode && getAllowedParentTypes('area').includes(selectedNode.type);
+                      const parentId = canAttachToSelected ? selectedNode.id : null;
+                      createNewNode('area', parentId);
+                    }}
+                    className="flex items-center justify-center gap-1 rounded-xl border border-white/10 sm:border-transparent bg-[#1a1a1a] sm:bg-transparent px-3 py-2 text-[10px] font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors whitespace-nowrap"
+                  >
+                    <Plus className="w-3 h-3" /> Area
+                  </button>
+                  <div className="hidden sm:block w-px bg-white/10 mx-1 my-2" />
+                  <button 
+                    onClick={() => {
+                      const canAttachToSelected = selectedNode && getAllowedParentTypes('goal').includes(selectedNode.type);
+                      const parentId = canAttachToSelected ? selectedNode.id : null;
+                      createNewNode('goal', parentId);
+                    }}
+                    className="flex items-center justify-center gap-1 rounded-xl border border-white/10 sm:border-transparent bg-[#1a1a1a] sm:bg-transparent px-3 py-2 text-[10px] font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors whitespace-nowrap"
+                  >
+                    <Plus className="w-3 h-3" /> Goal
+                  </button>
+                  <div className="hidden sm:block w-px bg-white/10 mx-1 my-2" />
+                  <button 
+                    onClick={() => {
+                      const canAttachToSelected = selectedNode && getAllowedParentTypes('project').includes(selectedNode.type);
+                      const parentId = canAttachToSelected ? selectedNode.id : null;
+                      createNewNode('project', parentId);
+                    }}
+                    className="flex items-center justify-center gap-1 rounded-xl border border-white/10 sm:border-transparent bg-[#1a1a1a] sm:bg-transparent px-3 py-2 text-[10px] font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors whitespace-nowrap"
+                  >
+                    <Plus className="w-3 h-3" /> Project
+                  </button>
+                </div>
+
+                {focusNodeId && (
+                  <div className="flex bg-blue-500/20 border border-blue-500/30 rounded-xl p-1 shadow-2xl backdrop-blur-xl items-center gap-2 px-3 py-1.5 shrink-0 h-fit self-start sm:self-center">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Focused View</span>
+                    <button 
+                      onClick={() => setFocusNodeId(null)}
+                      title="Clear focused view"
+                      aria-label="Clear focused view"
+                      className="p-1 hover:bg-white/10 rounded-lg transition-colors text-blue-400"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+              </div>
             </Panel>
-          </>
         )}
       </ReactFlow>
 

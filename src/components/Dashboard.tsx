@@ -2,10 +2,11 @@ import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { usePlannerStore } from '../store';
 import { motion } from 'motion/react';
 import { CheckCircle2, Clock, Target, TrendingUp, Calendar, Zap, ChevronRight, X, ListTodo, Edit2, Trash2, Plus } from 'lucide-react';
-import { cn } from '../lib/utils';
+import { cn, formatDeadline } from '../lib/utils';
 import { AnimatePresence } from 'motion/react';
 import { PlannerNode } from '../types';
 import { createPlannerNode, deletePlannerNode, updatePlannerNode } from '../lib/plannerApi';
+import { getPlanningNodeStats } from '../lib/hierarchy';
 
 interface DashboardProps {
   onNavigate?: (view: 'dashboard' | 'mindmap' | 'analytics') => void;
@@ -16,18 +17,7 @@ export default function Dashboard({ onNavigate, onNodeSelect }: DashboardProps) 
   const { nodes, updateNode, deleteNode, addNode, user } = usePlannerStore();
   const userId = user?.id;
   const [selectedProject, setSelectedProject] = useState<PlannerNode | null>(null);
-  const stats = useMemo(() => {
-    const total = nodes.length;
-    const completed = nodes.filter(n => n.status === 'completed').length;
-    const inProgress = nodes.filter(n => n.status === 'in-progress').length;
-
-    return {
-      total,
-      completed,
-      inProgress,
-      overallProgress: total > 0 ? Math.round((completed / total) * 100) : 0,
-    };
-  }, [nodes]);
+  const stats = useMemo(() => getPlanningNodeStats(nodes), [nodes]);
 
   const toggleTask = async (taskId: string) => {
     const task = nodes.find(n => n.id === taskId);
@@ -89,7 +79,7 @@ export default function Dashboard({ onNavigate, onNodeSelect }: DashboardProps) 
 
   const cards = [
     { title: 'Overall Progress', value: `${stats.overallProgress}%`, icon: TrendingUp, color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
-    { title: 'Total Nodes', value: stats.total, icon: Target, color: 'text-blue-400', bg: 'bg-blue-400/10' },
+    { title: 'Planning Nodes', value: stats.total, icon: Target, color: 'text-blue-400', bg: 'bg-blue-400/10' },
     { title: 'In Progress', value: stats.inProgress, icon: Clock, color: 'text-purple-400', bg: 'bg-purple-400/10' },
     { title: 'Completed', value: stats.completed, icon: CheckCircle2, color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
   ];
@@ -147,7 +137,7 @@ export default function Dashboard({ onNavigate, onNodeSelect }: DashboardProps) 
                 <h2 className="text-lg lg:text-xl font-bold tracking-tight">Current weekly focus</h2>
               </div>
               <div className="space-y-3 lg:space-y-4">
-                {nodes.filter(n => n.type === 'project' && n.status === 'in-progress').slice(0, 3).map(node => (
+                {nodes.filter(n => n.type === 'project' && n.status === 'in-progress').map(node => (
                   <button 
                     key={node.id} 
                     onClick={() => setSelectedProject(node)}
@@ -189,7 +179,7 @@ export default function Dashboard({ onNavigate, onNodeSelect }: DashboardProps) 
                 <h2 className="text-lg lg:text-xl font-bold tracking-tight">Current goals focus</h2>
               </div>
               <div className="space-y-3 lg:space-y-4">
-                {nodes.filter(n => n.type === 'goal' && n.status === 'in-progress').slice(0, 3).map(node => (
+                {nodes.filter(n => n.type === 'goal' && n.status === 'in-progress').map(node => (
                   <div key={node.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10 transition-all gap-3">
                     <div className="flex items-center gap-4">
                       <div className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
@@ -226,11 +216,12 @@ export default function Dashboard({ onNavigate, onNodeSelect }: DashboardProps) 
               <h2 className="text-lg lg:text-xl font-bold tracking-tight">Upcoming</h2>
             </div>
             <div className="space-y-3 lg:space-y-4">
-              {nodes.filter(n => n.deadline && n.status !== 'completed').sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime()).slice(0, 4).map(node => (
+              {nodes.filter(n => n.deadline && n.status !== 'completed').sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime()).map(node => (
                 <div key={node.id} className="flex items-center gap-4 p-3 rounded-xl hover:bg-white/5 transition-all cursor-pointer">
                   <div className="shrink-0 w-10 h-10 rounded-lg bg-white/5 border border-white/5 flex flex-col items-center justify-center">
-                    <span className="text-[10px] font-bold text-white/40 uppercase">{new Date(node.deadline!).toLocaleDateString(undefined, { month: 'short' })}</span>
+                    <span className="text-[10px] font-bold text-white/40 uppercase">{formatDeadline(node.deadline, 'MMM')}</span>
                     <span className="text-sm font-bold leading-none">{new Date(node.deadline!).getDate()}</span>
+                    <span className="text-[9px] font-bold text-white/25 leading-none">{formatDeadline(node.deadline, 'yy')}</span>
                   </div>
                   <div className="min-w-0">
                     <h4 className="font-semibold text-sm truncate">{node.title}</h4>
@@ -334,7 +325,7 @@ function TaskPanel({ project, nodes, onToggle, onEdit, onDelete, onAddTask, onCl
         exit={{ x: '100%' }}
         className="fixed right-0 top-0 h-full w-full lg:w-100 bg-[#111] border-l border-white/10 shadow-2xl z-70 flex flex-col"
       >
-        <div className="p-6 border-b border-white/5 flex items-center justify-between bg-[#161616]">
+            <div className="p-6 border-b border-white/5 flex items-center justify-between bg-[#161616]">
           <div className="flex items-center gap-3">
             <ListTodo className="w-5 h-5 text-purple-400" />
             <div className="min-w-0">
@@ -364,10 +355,10 @@ function TaskPanel({ project, nodes, onToggle, onEdit, onDelete, onAddTask, onCl
           {tasks.map(task => (
             <div 
               key={task.id}
-              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10 transition-all group min-h-18"
+              className="w-full flex flex-col gap-3 p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10 transition-all group min-h-18"
             >
               {editingId === task.id ? (
-                <div className="flex-1 flex items-center gap-4">
+                <div className="flex-1 flex items-center gap-4 w-full min-w-0">
                   <div className="w-5 h-5 rounded-full border border-white/20 flex items-center justify-center shrink-0" />
                   <input 
                     ref={inputRef}
@@ -384,7 +375,7 @@ function TaskPanel({ project, nodes, onToggle, onEdit, onDelete, onAddTask, onCl
               ) : (
                 <button 
                   onClick={() => onToggle(task.id)}
-                  className="flex flex-1 items-center gap-4 text-left"
+                  className="flex flex-1 items-start gap-4 text-left w-full min-w-0"
                 >
                   <div className={cn(
                     "w-5 h-5 rounded-full border flex items-center justify-center transition-all shrink-0",
@@ -395,7 +386,7 @@ function TaskPanel({ project, nodes, onToggle, onEdit, onDelete, onAddTask, onCl
                     {task.status === 'completed' && <CheckCircle2 className="w-3 h-3 text-[#0a0a0a]" />}
                   </div>
                   <span className={cn(
-                    "text-sm font-medium transition-all break-all line-clamp-2",
+                    "text-sm font-medium transition-all wrap-break-word whitespace-normal leading-snug flex-1 min-w-0",
                     task.status === 'completed' ? "text-white/20 line-through" : "text-white/70 group-hover:text-white"
                   )}>
                     {task.title}
@@ -404,7 +395,7 @@ function TaskPanel({ project, nodes, onToggle, onEdit, onDelete, onAddTask, onCl
               )}
               
               {editingId !== task.id && (
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2 shrink-0">
+                <div className="flex items-center gap-1 sm:opacity-0 sm:group-hover:opacity-100 opacity-100 transition-opacity ml-auto shrink-0 self-end sm:self-auto">
                   <button 
                     onClick={() => {
                       setEditTitle(task.title);

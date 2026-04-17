@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { usePlannerStore } from './store';
 import Auth from './components/Auth';
 import Sidebar from './components/Sidebar';
@@ -16,7 +16,8 @@ import NodeEditor from './components/NodeEditor';
 import { PlannerNode } from './types';
 import { AnimatePresence, motion } from 'motion/react';
 import { Menu, X, Lock } from 'lucide-react';
-import { fetchPlannerNodes, updatePassword } from './lib/plannerApi';
+import { fetchPlannerNoteNodeIds, fetchPlannerNodes, updatePassword } from './lib/plannerApi';
+import { supabase } from './lib/supabase';
 import { cn } from './lib/utils';
 
 function LoadingScreen() {
@@ -25,7 +26,7 @@ function LoadingScreen() {
       <div className="flex flex-col items-center gap-4 rounded-3xl border border-white/10 bg-white/5 px-8 py-10 shadow-2xl backdrop-blur-sm">
         <div className="h-12 w-12 animate-spin rounded-full border-2 border-white/15 border-t-white" />
         <div className="text-center">
-          <h1 className="text-lg font-bold tracking-tight">Cloud Planner</h1>
+          <h1 className="text-lg font-bold tracking-tight">Goal Digger</h1>
           <p className="mt-1 text-xs uppercase tracking-[0.24em] text-white/40">Loading workspace</p>
         </div>
       </div>
@@ -127,14 +128,18 @@ function UpdatePasswordModal({ onClose }: { onClose: () => void }) {
 }
 
 export default function App() {
-  const { token, user, setNodes, nodes } = usePlannerStore();
+  const { token, user, setAuth, setNodes, setNodeNoteIds, nodes } = usePlannerStore();
   const [activeView, setActiveView] = useState<'dashboard' | 'mindmap' | 'analytics' | 'goals' | 'projects'>('dashboard');
   const [selectedNode, setSelectedNode] = useState<PlannerNode | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [isSessionReady, setIsSessionReady] = useState(false);
   const [showUpdatePassword, setShowUpdatePassword] = useState(false);
+  const lastAuthedUserIdRef = useRef<string | null>(null);
+  const isInitialLoadInFlightRef = useRef(false);
+  const hasLoadedInitialDataRef = useRef(false);
 
   useEffect(() => {
     const persistApi = (usePlannerStore as any).persist;
@@ -160,19 +165,109 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isAuthReady || !token || !user?.id || nodes.length > 0) return;
+    let cancelled = false;
+
+    if (!isAuthReady) return;
+
+    setIsSessionReady(false);
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (cancelled) return;
+
+      if (session?.user && session.access_token) {
+        // Prevent repeated auth writes on token-refresh churn.
+        if (lastAuthedUserIdRef.current !== session.user.id || !token) {
+          setAuth({
+            user: {
+              id: session.user.id,
+              email: session.user.email || '',
+            },
+            token: session.access_token,
+          });
+          lastAuthedUserIdRef.current = session.user.id;
+        }
+      } else if (event === 'SIGNED_OUT') {
+        lastAuthedUserIdRef.current = null;
+        hasLoadedInitialDataRef.current = false;
+        isInitialLoadInFlightRef.current = false;
+        setAuth({ user: null, token: null });
+      }
+
+      setIsSessionReady(true);
+    });
+
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
+  }, [isAuthReady, setAuth, token]);
+
+  useEffect(() => {
+    if (!token || !user?.id) {
+      hasLoadedInitialDataRef.current = false;
+      isInitialLoadInFlightRef.current = false;
+      return;
+    }
+
+    if (lastAuthedUserIdRef.current !== user.id) {
+      hasLoadedInitialDataRef.current = false;
+      isInitialLoadInFlightRef.current = false;
+    }
+  }, [token, user?.id]);
+
+  useEffect(() => {
+    if (!isAuthReady || !isSessionReady || !token || !user?.id) return;
+    if (isInitialLoadInFlightRef.current || hasLoadedInitialDataRef.current) return;
 
     let cancelled = false;
-    fetchPlannerNodes(user.id)
-      .then(data => {
-        if (!cancelled) setNodes(data);
-      })
-      .catch(error => console.error('Failed to fetch nodes', error));
+    isInitialLoadInFlightRef.current = true;
+
+    const shouldRetryLoad = (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error ?? '');
+      return /429|too many requests|lock|aborterror|steal/i.test(message);
+    };
+
+    const loadInitialData = async () => {
+      let attempt = 0;
+      let lastError: unknown = null;
+
+      while (attempt < 3 && !cancelled) {
+        try {
+          // Sequence these requests to avoid auth-lock contention.
+          const data = await fetchPlannerNodes(user.id);
+          const noteNodeIds = await fetchPlannerNoteNodeIds(user.id).catch(() => []);
+
+          if (!cancelled) {
+            setNodes(data);
+            setNodeNoteIds(noteNodeIds);
+            hasLoadedInitialDataRef.current = true;
+          }
+          return;
+        } catch (error) {
+          lastError = error;
+          attempt += 1;
+
+          if (!shouldRetryLoad(error) || attempt >= 3) break;
+
+          await new Promise((resolve) => {
+            window.setTimeout(resolve, 350 * attempt);
+          });
+        }
+      }
+
+      if (!cancelled && lastError) {
+        console.error('Failed to fetch nodes', lastError);
+      }
+    };
+
+    void loadInitialData().finally(() => {
+      isInitialLoadInFlightRef.current = false;
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [isAuthReady, token, user?.id, nodes.length, setNodes]);
+  }, [isAuthReady, isSessionReady, token, user?.id, setNodes, setNodeNoteIds]);
 
   // Close sidebar when view changes on mobile
   useEffect(() => {
@@ -238,7 +333,7 @@ export default function App() {
             >
               <Menu className="w-6 h-6" />
             </button>
-            <h1 className="text-lg font-bold tracking-tight">Cloud Planner</h1>
+            <h1 className="text-lg font-bold tracking-tight">Goal Digger</h1>
             <div className="w-10" /> {/* Spacer */}
           </header>
         )}

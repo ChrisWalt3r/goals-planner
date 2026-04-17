@@ -13,6 +13,7 @@ export interface PlannerNode {
   position_x: number;
   position_y: number;
   tags: string[];
+  dependency_ids?: string[];
   created_at: string;
   updated_at: string;
 }

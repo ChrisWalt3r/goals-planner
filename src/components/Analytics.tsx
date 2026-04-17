@@ -25,23 +25,13 @@ import {
   PieChart as RePieChart,
   Pie
 } from 'recharts';
+import { getPlanningNodeStats } from '../lib/hierarchy';
 
 export default function Analytics() {
   const { nodes } = usePlannerStore();
 
   const stats = useMemo(() => {
-    const total = nodes.length;
-    const completed = nodes.filter(node => node.status === 'completed').length;
-    const inProgress = nodes.filter(node => node.status === 'in-progress').length;
-    const notStarted = total - completed - inProgress;
-
-    return {
-      total,
-      completed,
-      inProgress,
-      notStarted,
-      overallProgress: total > 0 ? Math.round((completed / total) * 100) : 0,
-    };
+    return getPlanningNodeStats(nodes);
   }, [nodes]);
 
   const typeData = [
@@ -195,7 +185,7 @@ export default function Analytics() {
               <ArrowUpRight className="w-3 h-3" /> +12%
             </span>
           </div>
-          <p className="text-xs text-white/40 mt-2">Percentage of total nodes completed.</p>
+          <p className="text-xs text-white/40 mt-2">Percentage of planning nodes completed.</p>
         </motion.div>
 
         {/* Focus Score */}

@@ -14,6 +14,8 @@ import {
   List,
   ChevronLeft,
   ChevronRight,
+  Search,
+  Link2,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
@@ -43,6 +45,13 @@ const STATUS_OPTIONS: Array<{ value: NodeStatus; label: string }> = [
   { value: 'not-started', label: 'Not Started' },
   { value: 'in-progress', label: 'In Progress' },
   { value: 'completed', label: 'Completed' },
+];
+
+const NODE_TYPE_OPTIONS: Array<{ value: NodeType; label: string }> = [
+  { value: 'area', label: 'Area' },
+  { value: 'goal', label: 'Goal' },
+  { value: 'project', label: 'Project' },
+  { value: 'task', label: 'Task' },
 ];
 
 type FloatingPosition = {
@@ -94,31 +103,46 @@ function useFloatingPosition(
 }
 
 interface ParentNodeSelectorProps {
-  node: PlannerNode;
+  nodeId: string;
+  nodeType: NodeType;
   nodes: PlannerNode[];
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
 }
 
-function ParentNodeSelector({ node, nodes, value, onChange, disabled }: ParentNodeSelectorProps) {
+function ParentNodeSelector({ nodeId, nodeType, nodes, value, onChange, disabled }: ParentNodeSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const position = useFloatingPosition(isOpen, buttonRef, 280);
 
   const options = useMemo(() => {
-    const allowedParentTypes = getAllowedParentTypes(node.type);
+    const allowedParentTypes = getAllowedParentTypes(nodeType);
 
     return nodes
-      .filter(n => n.id !== node.id)
+      .filter(n => n.id !== nodeId)
       .filter(n => allowedParentTypes.includes(n.type))
       .map(n => ({ id: n.id, label: `${n.title} (${n.type})` }));
-  }, [nodes, node.id, node.type]);
+  }, [nodes, nodeId, nodeType]);
 
-  const selectedLabel = value ? options.find(option => option.id === value)?.label || 'None (Root)' : 'None (Root)';
+  const filteredOptions = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return options;
+
+    return options.filter(option => option.label.toLowerCase().includes(query));
+  }, [options, searchQuery]);
+
+  const selectedLabel = value ? options.find(option => option.id === value)?.label || 'Select a parent node' : (nodeType === 'task' ? 'Choose a project parent' : 'None (Root)');
+
+  const allowRootSelection = nodeType !== 'task';
 
   useEffect(() => {
+    if (!isOpen) {
+      setSearchQuery('');
+    }
+
     if (!isOpen) return;
     if (disabled) return;
 
@@ -174,29 +198,49 @@ function ParentNodeSelector({ node, nodes, value, onChange, disabled }: ParentNo
               style={{ position: 'fixed', top: position.top, left: position.left, width: position.width, zIndex: 70 }}
               className="rounded-2xl border border-white/10 bg-[#0c0c0c] shadow-[0_30px_60px_rgba(0,0,0,0.65)] overflow-hidden"
             >
+              <div className="border-b border-white/10 p-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/25" />
+                  <input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search parent nodes..."
+                    className="w-full rounded-xl border border-white/10 bg-white/5 py-2 pl-10 pr-3 text-sm text-white placeholder:text-white/25 focus:outline-none focus:ring-2 focus:ring-white/20"
+                  />
+                </div>
+              </div>
+
               <div className="max-h-72 overflow-y-auto p-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange('');
-                    setIsOpen(false);
-                  }}
+                {allowRootSelection && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChange('');
+                      setIsOpen(false);
+                    }}
                     className={cn(
                       'w-full flex items-center justify-between gap-3 px-3 py-2 rounded-xl text-sm transition-colors',
                       !value ? 'bg-white text-black font-semibold' : 'text-white/70 hover:bg-white/10 hover:text-white'
                     )}
-                >
-                  <span>None (Root)</span>
-                  {!value && <span className="text-[10px] uppercase tracking-widest">Selected</span>}
-                </button>
+                  >
+                    <span>None (Root)</span>
+                    {!value && <span className="text-[10px] uppercase tracking-widest">Selected</span>}
+                  </button>
+                )}
 
-                {options.length === 0 && (
+                {filteredOptions.length === 0 && options.length === 0 && (
                   <div className="px-3 py-3 text-xs text-white/25 italic">
                     No valid parent nodes available.
                   </div>
                 )}
 
-                {options.map(option => {
+                {filteredOptions.length === 0 && options.length > 0 && (
+                  <div className="px-3 py-3 text-xs text-white/25 italic">
+                    No matching parent nodes.
+                  </div>
+                )}
+
+                {filteredOptions.map(option => {
                   const isSelected = option.id === value;
 
                   return (
@@ -313,6 +357,117 @@ function StatusSelector({ value, onChange, disabled }: StatusSelectorProps) {
                     >
                       <span>{option.label}</span>
                       {isSelected && <span className="text-[10px] uppercase tracking-widest">Selected</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+interface NodeTypeSelectorProps {
+  value: NodeType;
+  onChange: (value: NodeType) => void;
+  disabled?: boolean;
+  disabledTypes?: NodeType[];
+}
+
+function NodeTypeSelector({ value, onChange, disabled, disabledTypes = [] }: NodeTypeSelectorProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const position = useFloatingPosition(isOpen, buttonRef, 260);
+  const selectedLabel = NODE_TYPE_OPTIONS.find(option => option.value === value)?.label || 'Node';
+
+  useEffect(() => {
+    if (!isOpen || disabled) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (buttonRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setIsOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [disabled, isOpen]);
+
+  return (
+    <div className="space-y-2">
+      <label className="text-[10px] font-bold uppercase tracking-widest text-white/30 ml-1">Node Type</label>
+      <div className={cn("relative", isOpen ? "z-50" : "z-30")}>
+        <button
+          ref={buttonRef}
+          type="button"
+          disabled={disabled}
+          onClick={() => {
+            if (disabled) return;
+            setIsOpen(current => !current);
+          }}
+          className={cn(
+            'w-full flex items-center justify-between gap-3 bg-[#111] border border-white/10 rounded-xl px-4 py-3 text-sm text-left focus:outline-none focus:ring-2 focus:ring-white/20 hover:border-white/20 transition-colors',
+            disabled && 'opacity-60 cursor-not-allowed hover:border-white/10'
+          )}
+        >
+          <span className="capitalize pr-3">{selectedLabel}</span>
+          {!disabled && <ChevronDown className={cn('w-4 h-4 text-white/40 transition-transform', isOpen && 'rotate-180')} />}
+        </button>
+
+        <AnimatePresence>
+          {!disabled && isOpen && (
+            <motion.div
+              ref={panelRef}
+              initial={{ opacity: 0, y: -8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -8, scale: 0.98 }}
+              transition={{ duration: 0.14 }}
+              style={{ position: 'fixed', top: position.top, left: position.left, width: position.width, zIndex: 70 }}
+              className="rounded-2xl border border-white/10 bg-[#0c0c0c] shadow-[0_30px_60px_rgba(0,0,0,0.65)] overflow-hidden"
+            >
+              <div className="max-h-72 overflow-y-auto p-1">
+                {NODE_TYPE_OPTIONS.map(option => {
+                  const isSelected = option.value === value;
+                  const isDisabled = disabledTypes.includes(option.value);
+
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      disabled={isDisabled}
+                      onClick={() => {
+                        if (isDisabled) return;
+                        onChange(option.value);
+                        setIsOpen(false);
+                      }}
+                      className={cn(
+                        'w-full flex items-center justify-between gap-3 px-3 py-2 rounded-xl text-sm transition-colors',
+                        isDisabled
+                          ? 'cursor-not-allowed text-white/20'
+                          : isSelected
+                            ? 'bg-white text-black font-semibold'
+                            : 'text-white/70 hover:bg-white/10 hover:text-white'
+                      )}
+                    >
+                      <span>{option.label}</span>
+                      {isDisabled ? (
+                        <span className="text-[10px] uppercase tracking-widest text-white/20">Blocked</span>
+                      ) : isSelected ? (
+                        <span className="text-[10px] uppercase tracking-widest">Selected</span>
+                      ) : null}
                     </button>
                   );
                 })}
@@ -647,32 +802,95 @@ interface NodeEditorProps {
 }
 
 export default function NodeEditor({ node, onClose }: NodeEditorProps) {
-  const { nodes, updateNode, deleteNode, user } = usePlannerStore();
+  const { nodes, updateNode, deleteNode, user, setNodeHasNote } = usePlannerStore();
   const userId = user?.id;
   const [title, setTitle] = useState(node.title);
   const [description, setDescription] = useState(node.description || '');
+  const [type, setType] = useState<NodeType>(node.type);
   const [status, setStatus] = useState<NodeStatus>(node.status);
   const [progress, setProgress] = useState(node.progress);
   const [deadline, setDeadline] = useState(node.deadline || '');
   const [parentId, setParentId] = useState(node.parent_id || '');
+  const [dependencyIds, setDependencyIds] = useState<string[]>(node.dependency_ids || []);
   const [noteContent, setNoteContent] = useState('');
   const [isEditingNote, setIsEditingNote] = useState(true);
   const [activeTab, setActiveTab] = useState<'details' | 'notes'>('details');
   const noteEditorRef = useRef<HTMLTextAreaElement>(null);
+  const noteSaveTimerRef = useRef<number | null>(null);
+  const noteContentRef = useRef(noteContent);
+  const lastSavedNoteRef = useRef('');
 
-  const isAutoCalculated = (node.type === 'goal' && nodes.some(n => n.parent_id === node.id && n.type === 'project')) || 
-                           (node.type === 'project' && nodes.some(n => n.parent_id === node.id && (n.type === 'task' || n.type === 'project'))) ||
-                           (node.type === 'area' && nodes.some(n => n.parent_id === node.id && n.type === 'goal'));
+  const selectedParentNode = useMemo(() => nodes.find(candidate => candidate.id === parentId) ?? null, [nodes, parentId]);
+  const isParentSelectionValid = useMemo(() => {
+    if (!parentId) return type !== 'task';
+    if (!selectedParentNode) return false;
+
+    return getAllowedParentTypes(type).includes(selectedParentNode.type);
+  }, [parentId, selectedParentNode, type]);
+
+  const hasChildren = useMemo(() => nodes.some(candidate => candidate.parent_id === node.id), [nodes, node.id]);
+  const dependencyNodes = useMemo(() => nodes.filter(candidate => (dependencyIds.includes(candidate.id))), [dependencyIds, nodes]);
+  const dependentNodes = useMemo(() => nodes.filter(candidate => (candidate.dependency_ids ?? []).includes(node.id)), [nodes, node.id]);
+
+  const persistNote = async (contentToPersist: string) => {
+    if (!userId) return;
+    if (contentToPersist === lastSavedNoteRef.current) return;
+
+    try {
+      await savePlannerNote(node.id, contentToPersist, userId);
+      lastSavedNoteRef.current = contentToPersist;
+      setNodeHasNote(node.id, contentToPersist.trim().length > 0);
+    } catch (err) {
+      console.error('Failed to save note', err);
+    }
+  };
+
+  const persistDependencyIds = async (nextDependencyIds: string[]) => {
+    const normalizedDependencyIds = [...new Set(nextDependencyIds.filter((dependencyId) => dependencyId !== node.id))];
+    const updates = { dependency_ids: normalizedDependencyIds };
+
+    setDependencyIds(normalizedDependencyIds);
+    updateNode(node.id, updates);
+
+    try {
+      await updatePlannerNode(node.id, updates, userId);
+    } catch (err) {
+      console.error('Failed to save dependency links', err);
+    }
+  };
+
+  const persistRequiredByIds = async (dependentNode: PlannerNode) => {
+    const nextDependencyIds = (dependentNode.dependency_ids || []).filter(id => id !== node.id);
+    const updates = { dependency_ids: nextDependencyIds };
+
+    updateNode(dependentNode.id, updates);
+
+    try {
+      await updatePlannerNode(dependentNode.id, updates, userId);
+    } catch (err) {
+      console.error('Failed to save dependent node links', err);
+    }
+  };
+
+  const isAutoCalculated = (type === 'goal' && nodes.some(n => n.parent_id === node.id && n.type === 'project')) || 
+                           (type === 'project' && nodes.some(n => n.parent_id === node.id && (n.type === 'task' || n.type === 'project'))) ||
+                           (type === 'area' && nodes.some(n => n.parent_id === node.id && n.type === 'goal'));
 
   useEffect(() => {
     setTitle(node.title);
     setDescription(node.description || '');
+    setType(node.type);
     setStatus(node.status);
     setProgress(node.progress);
     setDeadline(node.deadline || '');
     setParentId(node.parent_id || '');
+    setDependencyIds(node.dependency_ids || []);
     fetchNote();
   }, [node]);
+
+  useEffect(() => {
+    noteContentRef.current = noteContent;
+  }, [noteContent]);
 
   useEffect(() => {
     if (activeTab === 'notes') {
@@ -687,34 +905,72 @@ export default function NodeEditor({ node, onClose }: NodeEditorProps) {
     return undefined;
   }, [activeTab]);
 
+  useEffect(() => {
+    if (activeTab !== 'notes') return;
+
+    if (noteSaveTimerRef.current) {
+      window.clearTimeout(noteSaveTimerRef.current);
+    }
+
+    noteSaveTimerRef.current = window.setTimeout(() => {
+      void persistNote(noteContentRef.current);
+    }, 600);
+
+    return () => {
+      if (noteSaveTimerRef.current) {
+        window.clearTimeout(noteSaveTimerRef.current);
+      }
+    };
+  }, [activeTab, noteContent, node.id, userId]);
+
+  useEffect(() => {
+    return () => {
+      if (noteSaveTimerRef.current) {
+        window.clearTimeout(noteSaveTimerRef.current);
+      }
+
+      if (noteContentRef.current !== lastSavedNoteRef.current) {
+        void persistNote(noteContentRef.current);
+      }
+    };
+  }, [node.id, userId]);
+
   const fetchNote = async () => {
     try {
       const content = await fetchPlannerNote(node.id, userId);
       setNoteContent(content);
+      noteContentRef.current = content;
+      lastSavedNoteRef.current = content;
+      setNodeHasNote(node.id, content.trim().length > 0);
     } catch (err) {
       console.error('Failed to fetch note');
     }
   };
 
   const handleSave = async () => {
-    const finalProgress = node.type === 'project' && status === 'completed' ? 100 : progress;
+    const finalProgress = type === 'project' && status === 'completed' ? 100 : progress;
     const updates = {
       title,
       description,
+      type,
       status,
       progress: finalProgress,
       deadline: deadline || null,
       parent_id: parentId || null,
+      dependency_ids: dependencyIds,
     };
-    
-    updateNode(node.id, updates);
 
-    try {
-      await updatePlannerNode(node.id, updates, userId);
-      await savePlannerNote(node.id, noteContent, userId);
-    } catch (err) {
-      console.error('Failed to save node', err);
+    if (isParentSelectionValid) {
+      updateNode(node.id, updates);
+
+      try {
+        await updatePlannerNode(node.id, updates, userId);
+      } catch (err) {
+        console.error('Failed to save node', err);
+      }
     }
+
+    await persistNote(noteContent);
   };
 
   const handleDelete = async () => {
@@ -740,14 +996,14 @@ export default function NodeEditor({ node, onClose }: NodeEditorProps) {
         <div className="flex items-center gap-3">
           <div className={cn(
             "w-3 h-3 rounded-full",
-            node.type === 'area' ? "bg-white" : 
-            node.type === 'goal' ? "bg-blue-500" :
-            node.type === 'project' ? "bg-purple-500" : "bg-white/40"
+            type === 'area' ? "bg-white" : 
+            type === 'goal' ? "bg-blue-500" :
+            type === 'project' ? "bg-purple-500" : "bg-white/40"
           )} />
-          <h2 className="text-base lg:text-lg font-bold tracking-tight">Edit {node.type}</h2>
+          <h2 className="text-base lg:text-lg font-bold tracking-tight">Edit {type}</h2>
         </div>
         <div className="flex items-center gap-1 lg:gap-2">
-          <button onClick={handleSave} title="Save node" aria-label="Save node" className="p-2 hover:bg-white/5 rounded-lg text-emerald-400 transition-colors">
+          <button onClick={handleSave} title={isParentSelectionValid ? 'Save node' : 'Choose a valid parent first'} aria-label="Save node" disabled={!isParentSelectionValid} className="p-2 hover:bg-white/5 rounded-lg text-emerald-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
             <Save className="w-5 h-5" />
           </button>
           <button onClick={handleDelete} title="Delete node" aria-label="Delete node" className="p-2 hover:bg-white/5 rounded-lg text-red-400 transition-colors">
@@ -796,14 +1052,79 @@ export default function NodeEditor({ node, onClose }: NodeEditorProps) {
               />
             </div>
 
+            <NodeTypeSelector
+              value={type}
+              onChange={setType}
+              disabledTypes={hasChildren ? ['task'] : []}
+            />
+
             <ParentNodeSelector
-              node={node}
+              nodeId={node.id}
+              nodeType={type}
               nodes={nodes}
               value={parentId}
               onChange={setParentId}
             />
 
-            {node.type !== 'task' && (
+            <div className="space-y-3 rounded-2xl border border-white/5 bg-white/5 p-4">
+              <div className="flex items-center gap-2">
+                <Link2 className="w-4 h-4 text-purple-400" />
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-white/35">Linked Nodes</p>
+                  <p className="text-[10px] text-white/25 mt-1">These links are created from the mind map only.</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-white/25 mb-2">Depends On</p>
+                  {dependencyNodes.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {dependencyNodes.map((dependencyNode) => (
+                        <div key={dependencyNode.id} className="inline-flex items-center gap-2 rounded-full border border-purple-500/20 bg-purple-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-purple-200">
+                          <span className="truncate max-w-40">{dependencyNode.title || 'Untitled'}</span>
+                          <button
+                            type="button"
+                            onClick={() => void persistDependencyIds(dependencyIds.filter((dependencyId) => dependencyId !== dependencyNode.id))}
+                            className="rounded-full p-0.5 text-purple-100/70 hover:text-white transition-colors"
+                            aria-label={`Remove dependency ${dependencyNode.title || 'Untitled'}`}
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs italic text-white/25">No linked dependencies yet.</p>
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-white/25 mb-2">Required By</p>
+                  {dependentNodes.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {dependentNodes.map((dependentNode) => (
+                        <div key={dependentNode.id} className="inline-flex items-center gap-2 rounded-full border border-blue-500/20 bg-blue-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-blue-200">
+                          <span className="truncate max-w-40">{dependentNode.title || 'Untitled'}</span>
+                          <button
+                            type="button"
+                            onClick={() => void persistRequiredByIds(dependentNode)}
+                            className="rounded-full p-0.5 text-blue-100/70 hover:text-white transition-colors"
+                            aria-label={`Remove required by ${dependentNode.title || 'Untitled'}`}
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs italic text-white/25">No nodes depend on this one yet.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {type !== 'task' && (
               <>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -811,7 +1132,7 @@ export default function NodeEditor({ node, onClose }: NodeEditorProps) {
                       value={status}
                       onChange={(nextStatus) => {
                         setStatus(nextStatus);
-                        if (node.type === 'project' && nextStatus === 'completed') {
+                        if (type === 'project' && nextStatus === 'completed') {
                           setProgress(100);
                         }
                       }}
@@ -836,7 +1157,7 @@ export default function NodeEditor({ node, onClose }: NodeEditorProps) {
                   </div>
                 </div>
 
-                {node.type !== 'area' && (
+                {type !== 'area' && (
                   <DeadlinePicker value={deadline} onChange={setDeadline} />
                 )}
               </>
@@ -847,7 +1168,7 @@ export default function NodeEditor({ node, onClose }: NodeEditorProps) {
               <textarea 
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                rows={node.type === 'task' ? 12 : 4}
+                rows={type === 'task' ? 12 : 4}
                 aria-label="Node description"
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-white/20 resize-none"
                 placeholder="Add more context..."
