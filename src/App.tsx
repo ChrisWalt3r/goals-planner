@@ -17,6 +17,7 @@ import { PlannerNode } from './types';
 import { AnimatePresence, motion } from 'motion/react';
 import { Menu, X, Lock } from 'lucide-react';
 import { fetchPlannerNoteNodeIds, fetchPlannerNodes, updatePassword } from './lib/plannerApi';
+import { logSchemaStatus } from './lib/schemaValidator';
 import { supabase } from './lib/supabase';
 import { cn } from './lib/utils';
 
@@ -136,10 +137,12 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isSessionReady, setIsSessionReady] = useState(false);
+  const [loadSeed, setLoadSeed] = useState(0);
   const [showUpdatePassword, setShowUpdatePassword] = useState(false);
   const lastAuthedUserIdRef = useRef<string | null>(null);
   const isInitialLoadInFlightRef = useRef(false);
   const hasLoadedInitialDataRef = useRef(false);
+  const retryTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const persistApi = (usePlannerStore as any).persist;
@@ -191,16 +194,50 @@ export default function App() {
         hasLoadedInitialDataRef.current = false;
         isInitialLoadInFlightRef.current = false;
         setAuth({ user: null, token: null });
+        setNodes([]);
+        setNodeNoteIds([]);
       }
 
       setIsSessionReady(true);
     });
 
+    // Bootstraps session readiness even when auth events are delayed.
+    void supabase.auth.getSession()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          console.error('Failed to read session during bootstrap', error);
+          setIsSessionReady(true);
+          return;
+        }
+
+        const session = data.session;
+        if (session?.user && session.access_token) {
+          if (lastAuthedUserIdRef.current !== session.user.id || !token) {
+            setAuth({
+              user: {
+                id: session.user.id,
+                email: session.user.email || '',
+              },
+              token: session.access_token,
+            });
+            lastAuthedUserIdRef.current = session.user.id;
+          }
+        }
+
+        setIsSessionReady(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('Unexpected session bootstrap error', error);
+        setIsSessionReady(true);
+      });
+
     return () => {
       cancelled = true;
       subscription.unsubscribe();
     };
-  }, [isAuthReady, setAuth, token]);
+  }, [isAuthReady, setAuth, token, setNodes, setNodeNoteIds]);
 
   useEffect(() => {
     if (!token || !user?.id) {
@@ -216,15 +253,28 @@ export default function App() {
   }, [token, user?.id]);
 
   useEffect(() => {
-    if (!isAuthReady || !isSessionReady || !token || !user?.id) return;
+    if (!isAuthReady || !isSessionReady || !user?.id) return;
     if (isInitialLoadInFlightRef.current || hasLoadedInitialDataRef.current) return;
 
     let cancelled = false;
     isInitialLoadInFlightRef.current = true;
 
+    const getSupabaseErrorMessage = (error: unknown) => {
+      if (!error) return '';
+      if (error instanceof Error) return error.message;
+      if (typeof error === 'string') return error;
+
+      if (typeof error === 'object') {
+        const maybeMessage = (error as { message?: unknown }).message;
+        if (typeof maybeMessage === 'string') return maybeMessage;
+      }
+
+      return String(error);
+    };
+
     const shouldRetryLoad = (error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error ?? '');
-      return /429|too many requests|lock|aborterror|steal/i.test(message);
+      const message = getSupabaseErrorMessage(error);
+      return /429|too many requests|lock|aborterror|steal|timeout|network|fetch/i.test(message);
     };
 
     const loadInitialData = async () => {
@@ -233,14 +283,39 @@ export default function App() {
 
       while (attempt < 3 && !cancelled) {
         try {
+          const { data: userData, error: userError } = await supabase.auth.getUser();
+          if (userError) throw userError;
+          if (!userData.user) {
+            throw new Error('Authenticated session is missing while loading planner data.');
+          }
+
+          if (userData.user.id !== user.id) {
+            setAuth({
+              user: {
+                id: userData.user.id,
+                email: userData.user.email || '',
+              },
+              token,
+            });
+          }
+
           // Sequence these requests to avoid auth-lock contention.
-          const data = await fetchPlannerNodes(user.id);
-          const noteNodeIds = await fetchPlannerNoteNodeIds(user.id).catch(() => []);
+          const data = await fetchPlannerNodes(userData.user.id);
+          const noteNodeIds = await fetchPlannerNoteNodeIds(userData.user.id).catch(() => []);
 
           if (!cancelled) {
             setNodes(data);
             setNodeNoteIds(noteNodeIds);
             hasLoadedInitialDataRef.current = true;
+            if (retryTimerRef.current) {
+              window.clearTimeout(retryTimerRef.current);
+              retryTimerRef.current = null;
+            }
+
+            // Verify schema on successful load to detect missing dependency_ids column early
+            void logSchemaStatus().catch(() => {
+              // Silently fail - just informational logging
+            });
           }
           return;
         } catch (error) {
@@ -257,6 +332,15 @@ export default function App() {
 
       if (!cancelled && lastError) {
         console.error('Failed to fetch nodes', lastError);
+
+        if (retryTimerRef.current) {
+          window.clearTimeout(retryTimerRef.current);
+        }
+
+        retryTimerRef.current = window.setTimeout(() => {
+          if (cancelled || hasLoadedInitialDataRef.current || isInitialLoadInFlightRef.current) return;
+          setLoadSeed((current) => current + 1);
+        }, 2000);
       }
     };
 
@@ -266,8 +350,38 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      isInitialLoadInFlightRef.current = false;
+      if (retryTimerRef.current) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
     };
-  }, [isAuthReady, isSessionReady, token, user?.id, setNodes, setNodeNoteIds]);
+  }, [isAuthReady, isSessionReady, user?.id, setNodes, setNodeNoteIds, loadSeed, setAuth]);
+
+  useEffect(() => {
+    if (!token || !user?.id) return;
+
+    const retryLoad = () => {
+      if (hasLoadedInitialDataRef.current || isInitialLoadInFlightRef.current) return;
+      setLoadSeed((current) => current + 1);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        retryLoad();
+      }
+    };
+
+    window.addEventListener('online', retryLoad);
+    window.addEventListener('focus', retryLoad);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('online', retryLoad);
+      window.removeEventListener('focus', retryLoad);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [token, user?.id]);
 
   // Close sidebar when view changes on mobile
   useEffect(() => {
@@ -284,6 +398,10 @@ export default function App() {
   };
 
   if (!isAuthReady) {
+    return <LoadingScreen />;
+  }
+
+  if (token && !isSessionReady) {
     return <LoadingScreen />;
   }
 

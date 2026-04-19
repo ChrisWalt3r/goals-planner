@@ -1,7 +1,7 @@
 import { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { PlannerNode, NodeStatus, NodeType, User } from '../types';
-import { collectNodeAndDescendantIds, collectOrphanNodeIds } from './hierarchy';
+import { collectNodeAndDescendantIds } from './hierarchy';
 
 interface PlannerNodeRow {
   id: string;
@@ -36,8 +36,21 @@ const stripUndefined = <T extends Record<string, unknown>>(value: T) => {
 
 const RETRY_DELAYS_MS = [250, 700, 1400];
 
+const getSupabaseErrorMessage = (error: unknown) => {
+  if (!error) return '';
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+
+  if (typeof error === 'object') {
+    const maybeMessage = (error as { message?: unknown }).message;
+    if (typeof maybeMessage === 'string') return maybeMessage;
+  }
+
+  return String(error);
+};
+
 const isTransientSupabaseError = (error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error ?? '');
+  const message = getSupabaseErrorMessage(error);
   return /429|too many requests|lock|aborterror|steal|timeout|network|fetch/i.test(message);
 };
 
@@ -63,7 +76,7 @@ const withSupabaseRetry = async <T extends { error: unknown }>(
 };
 
 const isMissingDependencyColumnError = (error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error ?? '');
+  const message = getSupabaseErrorMessage(error);
   return /dependency_ids|column .* does not exist/i.test(message);
 };
 
@@ -193,38 +206,29 @@ export async function signOut() {
 }
 
 export async function fetchPlannerNodes(userId: string) {
-  const { data, error } = await supabase
-    .from('nodes')
-    .select('*')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: true });
-
-  if (error) throw error;
-  const nodes = (data ?? []).map((row) => mapNode(row as PlannerNodeRow));
-  const orphanIds = collectOrphanNodeIds(nodes);
-
-  if (orphanIds.length > 0) {
-    const { error: deleteError } = await supabase
+  const result = await withSupabaseRetry(() =>
+    supabase
       .from('nodes')
-      .delete()
-      .in('id', orphanIds)
-      .eq('user_id', userId);
+      .select('id, user_id, parent_id, type, title, description, status, progress, deadline, position_x, position_y, tags, dependency_ids, created_at, updated_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true })
+  );
 
-    if (deleteError) throw deleteError;
-  }
-
-  return nodes.filter((node) => !orphanIds.includes(node.id));
+  if (result.error) throw result.error;
+  return (result.data ?? []).map((row) => mapNode(row as PlannerNodeRow));
 }
 
 export async function fetchPlannerNoteNodeIds(userId: string) {
-  const { data, error } = await supabase
-    .from('notes')
-    .select('node_id, content')
-    .eq('user_id', userId);
+  const result = await withSupabaseRetry(() =>
+    supabase
+      .from('notes')
+      .select('node_id, content')
+      .eq('user_id', userId)
+  );
 
-  if (error) throw error;
+  if (result.error) throw result.error;
 
-  return (data ?? [])
+  return (result.data ?? [])
     .filter((row) => typeof row.content === 'string' && row.content.trim().length > 0)
     .map((row) => row.node_id as string);
 }
@@ -238,6 +242,15 @@ export async function createPlannerNode(node: PlannerNode, userId?: string) {
 
   if (!primaryResult.error) return;
   if (!isMissingDependencyColumnError(primaryResult.error)) throw primaryResult.error;
+
+  // Fallback: dependency_ids column doesn't exist in database yet
+  const hasDependencyIds = node.dependency_ids && node.dependency_ids.length > 0;
+  if (hasDependencyIds) {
+    console.warn(
+      '[Planner] Node created without connector links: dependency_ids column missing from database. ' +
+      'Run migration in Supabase: ALTER TABLE public.nodes ADD COLUMN IF NOT EXISTS dependency_ids JSONB NOT NULL DEFAULT \'[]\'::jsonb;'
+    );
+  }
 
   const fallbackResult = await withSupabaseRetry(() => supabase.from('nodes').insert({
     ...buildNodePayload(node, false),
@@ -268,6 +281,16 @@ export async function updatePlannerNode(nodeId: string, updates: Partial<Planner
   if (!primaryResult.error) return;
 
   if (!isMissingDependencyColumnError(primaryResult.error) || !('dependency_ids' in payload)) throw primaryResult.error;
+
+  // Fallback: The database is missing the dependency_ids column.
+  // This gracefully handles the case where production Supabase hasn't been migrated yet.
+  const hasDependencyChanges = updates.dependency_ids !== undefined;
+  if (hasDependencyChanges) {
+    console.warn(
+      '[Planner] Connector links not saved: dependency_ids column missing from database. ' +
+      'Run migration in Supabase: ALTER TABLE public.nodes ADD COLUMN IF NOT EXISTS dependency_ids JSONB NOT NULL DEFAULT \'[]\'::jsonb;'
+    );
+  }
 
   const fallbackPayload = stripUndefined({
     parent_id: updates.parent_id,
